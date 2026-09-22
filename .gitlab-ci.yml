@@ -13,13 +13,6 @@ stages:
   - test
   - deploy
 
-default:
-  tags:
-    - llm
-
-variables:
-  DOCKER_HOST: unix:///var/run/docker.sock
-  DOCKER_TLS_CERTDIR: ""
 
 # ── Reusable: write .env from CI variables ──────────────────────────────────
 #
@@ -73,6 +66,9 @@ export_catalog:
   stage: build
   image: python:3.12
   when: manual
+  # Needs to reach Splunk's management port, which a shared runner cannot.
+  tags:
+    - llm
   rules:
     - if: '$CI_COMMIT_BRANCH'
   script:
@@ -122,6 +118,15 @@ export_catalog:
 build_image:
   stage: build
   image: docker:latest
+  # A shared runner has no Docker daemon of its own, so one is started
+  # alongside. The deploy job does the opposite — it wants the daemon of the
+  # host it is deploying to — which is why this is set per job rather than
+  # once at the top.
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   script:
     - docker build -t soc-mcp-splunk:${CI_COMMIT_SHORT_SHA} ./Splunk
     - docker build -t soc-mcp-threatq:${CI_COMMIT_SHORT_SHA} ./Threatq
@@ -167,6 +172,16 @@ code_test:
 deploy_production:
   stage: deploy
   image: docker:latest
+  # The only job that needs a specific runner. DOCKER_HOST points at the
+  # socket of the machine this runs on, so the runner *is* the deployment
+  # target — a shared runner would build the stack inside a throwaway
+  # container and take it away again.
+  tags:
+    - llm
+  variables:
+    # The socket of the machine this runner is on: the deployment target.
+    DOCKER_HOST: unix:///var/run/docker.sock
+    DOCKER_TLS_CERTDIR: ""
   environment:
     name: production
     # The address GitLab shows and links to. It is where the service actually
