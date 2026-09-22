@@ -57,6 +57,68 @@ variables:
     if eval "[ \"\${${key}+set}\" = set ]"; then echo "  $key"; fi
   done < .env.example
 
+# ── Splunk data catalogue ───────────────────────────────────────────────────
+# Ported from .github/workflows/splunk-catalog.yml when this moved to GitLab.
+#
+# Exports what the estate actually holds — indexes, sourcetypes, fields — into
+# Splunk/table/, and only when there is not already a complete export there.
+#
+# Manual, not on a schedule. It runs searches against a production search head,
+# and the catalogue changes when the estate does, not on a timer. Run it after
+# onboarding a new source, or when a lookup starts reporting that the catalogue
+# names no field for something.
+#
+#   Variables: SPLUNK_URL, SPLUNK_TOKEN, and a runner that can reach 8089.
+export_catalog:
+  stage: build
+  image: python:3.12
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+  script:
+    - apt-get update -qq && apt-get install -y -qq curl >/dev/null
+    - |
+      set -eu
+      : "${SPLUNK_URL:?set SPLUNK_URL, e.g. https://splunk.internal:8089}"
+      : "${SPLUNK_TOKEN:?set SPLUNK_TOKEN}"
+
+      # "Already there" is not "the directory exists". An export that died
+      # after writing indexes.json leaves one behind, and a catalogue listing
+      # three of an estate's two hundred sourcetypes is worse than none: the
+      # agent is told the estate is small, searches what it was given, finds
+      # nothing, and reports that nothing happened.
+      if python3 scripts/verify_catalog_export.py Splunk/table; then
+        echo "a complete catalogue is already committed — nothing to do"
+        exit 0
+      fi
+
+      # Into a staging directory. A run that dies partway leaves the committed
+      # catalogue untouched rather than replacing it with a shorter one.
+      SPLUNK_AUTH="Bearer $SPLUNK_TOKEN" \
+      SPLUNK_INSECURE="${SPLUNK_INSECURE:-0}" \
+      OUT="$CI_PROJECT_DIR/catalog-staging" \
+        bash scripts/export_splunk_catalog.sh
+
+      # The same check, again. One definition of "usable" for both questions —
+      # the day two separate checks disagree is the day a half-written
+      # catalogue is committed by the looser one.
+      python3 scripts/verify_catalog_export.py "$CI_PROJECT_DIR/catalog-staging"
+
+      rm -rf Splunk/table
+      mv "$CI_PROJECT_DIR/catalog-staging" Splunk/table
+      echo "exported:"
+      python3 scripts/verify_catalog_export.py Splunk/table
+  artifacts:
+    name: "splunk-catalog-${CI_COMMIT_SHORT_SHA}"
+    expire_in: 30 days
+    paths:
+      - Splunk/table/
+    # The export holds field names and, depending on the flags used, example
+    # values from real events. It is an artifact rather than a commit so a
+    # person looks at it before it reaches the repo — the GitHub version
+    # committed it straight back, which put production field values into git
+    # history where they cannot be taken out again.
+
 build_image:
   stage: build
   image: docker:latest

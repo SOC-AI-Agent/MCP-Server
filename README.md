@@ -42,8 +42,13 @@ by default and takes `MCP_CATALOG_PATH` to override it.
 | `make_catalog_template.py` | Turns that export into a catalogue skeleton, marking every guess. |
 | `plan_query_agents.py` | Groups sourcetypes into query agents. |
 
-`.github/workflows/splunk-catalog.yml` runs the first two: it exports into
-`Splunk/table/` only when there is not already a complete export there.
+The `export_catalog` job in `.gitlab-ci.yml` runs the first two. It is manual:
+it searches a production search head, and the catalogue changes when the
+estate does, not on a timer. It exports only when `Splunk/table/` does not
+already hold a complete one, and leaves the result as a job artifact rather
+than committing it — the export carries field names and, with the right
+flags, example values from real events, and git history is not a place to
+put those by accident.
 
 `docs/splunk-catalog.md` is the long version — what to export, what the files
 mean, and what to check before trusting one in production.

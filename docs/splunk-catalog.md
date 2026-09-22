@@ -108,7 +108,7 @@ cert ตรวจไม่ผ่าน (60), ต่อไม่ติด (7), ti
 
 ## รันอัตโนมัติด้วย GitHub Actions
 
-[`.github/workflows/splunk-catalog.yml`](../.github/workflows/splunk-catalog.yml)
+`export_catalog` ใน [`.gitlab-ci.yml`](../.gitlab-ci.yml)
 ดึง export มาเก็บที่ `mcp-server/Splunk/table/` **เฉพาะตอนที่ยังไม่มี**
 ถ้ามีครบแล้วจะข้าม ใช้เวลาไม่กี่วินาที
 
