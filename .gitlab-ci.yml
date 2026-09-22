@@ -68,7 +68,11 @@ export_catalog:
   when: manual
   # Needs to reach Splunk's management port, which a shared runner cannot.
   tags:
-    - llm
+    # The runner installed on the machine that hosts the stack. Named for what
+    # it is for, not for what the old machine was called — the job that needs
+    # it needs it because the runner IS the deployment target, and a tag saying
+    # so is the difference between "which runner" and "which server".
+    - soc-deploy
   rules:
     - if: '$CI_COMMIT_BRANCH'
   script:
@@ -177,7 +181,11 @@ deploy_production:
   # target — a shared runner would build the stack inside a throwaway
   # container and take it away again.
   tags:
-    - llm
+    # The runner installed on the machine that hosts the stack. Named for what
+    # it is for, not for what the old machine was called — the job that needs
+    # it needs it because the runner IS the deployment target, and a tag saying
+    # so is the difference between "which runner" and "which server".
+    - soc-deploy
   variables:
     # The socket of the machine this runner is on: the deployment target.
     DOCKER_HOST: unix:///var/run/docker.sock
