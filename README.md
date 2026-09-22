@@ -88,6 +88,29 @@ That is gone. Unconfigured now means the connector refuses to start, and
 different facts: a miss means the wiki was searched and covers nothing, and
 this means the wiki was never reached.
 
+## Running the whole stack
+
+This repo runs on its own with the compose file above, which is enough to work
+on it. Running the SOC end to end takes all five repos, checked out side by
+side, and one script that writes the `.env` files:
+
+```bash
+git clone https://gitlab.com/agentic-soc/backend.git     Backend
+git clone https://gitlab.com/agentic-soc/frontend.git    Frontend
+git clone https://gitlab.com/agentic-soc/ai-service.git  AI-Service
+git clone https://gitlab.com/agentic-soc/llm-server.git  LLM-Server
+git clone https://gitlab.com/agentic-soc/mcp-server.git  MCP-Server
+
+cd Backend
+./deploy/dev-setup.sh                            # writes .env in all four
+docker compose -f deploy/dev.yml up -d --build   # http://localhost:3000
+```
+
+The script lives in Backend because three of the secrets it generates have to
+be identical in more than one repo — the tokens the connectors check — and
+they are the ones that break quietly: a mismatch is a 401 with nothing saying
+why. Generating them in one place is the whole point.
+
 ---
 
 ## Where this came from
