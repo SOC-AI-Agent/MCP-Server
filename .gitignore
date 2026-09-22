@@ -1,0 +1,18 @@
+# Secrets. Only .env.example is tracked.
+.env
+*.env
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local data
+*.db
+*.sqlite3
+.DS_Store

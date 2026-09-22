@@ -1,0 +1,67 @@
+# The MCP connectors, on their own.
+#
+# Three tool servers for the AI agent, one per platform they front. They hold
+# no job state and share nothing but this file — each carries its own bearer
+# token, because one stolen token should not open all three.
+#
+#   cp .env.example .env    # fill in the platform credentials
+#   docker compose up -d --build
+#
+# Nothing here is reachable from outside the network by default. The backend
+# and the LLM server join `soc-network` and address them by container name.
+
+services:
+  soc-mcp-splunk:
+    build:
+      context: ./Splunk
+    container_name: soc-mcp-splunk
+    env_file: [.env]
+    volumes:
+      # What the model is told about this Splunk: which index and sourcetype
+      # hold what, and which field carries which meaning. Read-only — a person
+      # edits it with the rest of the repo, and nothing in the container has
+      # any business rewriting it.
+      - ./Splunk/catalog:/catalog:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8200/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks: [soc-network]
+
+  soc-mcp-threatq:
+    build:
+      context: ./Threatq
+    container_name: soc-mcp-threatq
+    env_file: [.env]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8300/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks: [soc-network]
+
+  soc-mcp-confluence:
+    build:
+      context: ./Confluence
+    container_name: soc-mcp-confluence
+    env_file: [.env]
+    volumes:
+      # Playbooks for a stack with no Confluence to read, so this comes up on a
+      # workstation with no Atlassian account.
+      - ./Confluence/tests:/playbooks:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8600/health', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks: [soc-network]
+
+networks:
+  soc-network:
+    # Shared with the other repos' stacks. Created by whichever comes up first.
+    name: soc-network
+    driver: bridge

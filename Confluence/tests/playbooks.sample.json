@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Playbooks for a stack with no Confluence to read. Same fields the wiki's",
+    "Page Properties rows map onto, so what runs here is what will run there.",
+    "",
+    "splunk_query holds PARAMETERS, never SPL. Storing the analyst's search",
+    "verbatim and running it would let anyone with edit access to the space run",
+    "arbitrary SPL as the service account, and SPL is not read-only."
+  ],
+  "playbooks": [
+    {
+      "page_id": "sample-1",
+      "alert_name": "Malware detected in downloaded file",
+      "aliases": ["Virus detected", "UTM virus detection"],
+      "use_case_category": "Malware",
+      "version": "1.3",
+      "rule_description": "The perimeter UTM engine matched a file transfer against a malware signature.",
+      "true_condition": "The file reached the endpoint, or the same host contacted the source again after the block.",
+      "false_condition": "EICAR test file, or a security-team download during a scheduled test.",
+      "splunk_query": {
+        "index": "main",
+        "sourcetype": "fortigate",
+        "filters": {"action": "blocked"},
+        "group_by": ["srcip"],
+        "metrics": [{"fn": "count"}, {"fn": "distinct_count", "field": "dstip"}]
+      },
+      "work_around": "Confirm the block held, then check whether the host reached the same destination again.",
+      "target_audience": "Tier 1",
+      "contact": "soc@example.com"
+    },
+    {
+      "page_id": "sample-2",
+      "alert_name": "Excessive Failed Logins",
+      "aliases": ["Brute force attempt", "T1110"],
+      "use_case_category": "Credential Access",
+      "version": "2.0",
+      "rule_description": "More failed authentications from one source than the threshold allows.",
+      "true_condition": "Failures across several accounts, or a success following the failures.",
+      "false_condition": "One account, one source, right after a password change.",
+      "splunk_query": {
+        "index": "main",
+        "sourcetype": "fortigate",
+        "filters": {"action": "blocked"},
+        "group_by": ["user"],
+        "metrics": [{"fn": "count"}]
+      },
+      "work_around": "Check whether any of the attempts succeeded before locking the account.",
+      "target_audience": "Tier 1",
+      "contact": "soc@example.com"
+    }
+  ]
+}
