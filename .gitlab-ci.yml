@@ -1,0 +1,165 @@
+# MCP-Server — three connectors, built and deployed together.
+#
+# They share this repo and this pipeline, and each carries its own bearer
+# token so one stolen token does not open all three.
+#
+# MCP_AUTH_TOKEN, THREATQ_MCP_AUTH_TOKEN and CONFLUENCE_MCP_AUTH_TOKEN must
+# match the Backend project's byte for byte. Set them as GROUP variables, not
+# per project: two copies are two things that drift, and the failure is a 401
+# with nothing saying why.
+
+stages:
+  - build
+  - test
+  - deploy
+
+default:
+  tags:
+    - llm
+
+variables:
+  DOCKER_HOST: unix:///var/run/docker.sock
+  DOCKER_TLS_CERTDIR: ""
+
+# ── Reusable: write .env from CI variables ──────────────────────────────────
+#
+# Not sed. A password containing | or / breaks the expression, and one
+# containing & is silently replaced by the matched text — the pipeline goes
+# green and the service cannot log in. This reads the keys from .env.example
+# and takes any that exist in the environment, whatever characters they hold.
+#
+# The result is never an artifact and never printed. The monorepo's job did
+# both: `artifacts: paths: [.env]` put filled-in production credentials in
+# GitLab's artifact store for a week, downloadable by anyone with project
+# access, and `cat .env | grep -v PASSWORD | grep -v SECRET | grep -v URL`
+# printed everything else — including MCP_AUTH_TOKEN, SPLUNK_TOKEN,
+# THREATQ_TOKEN and CONFLUENCE_API_TOKEN, none of which contain those words.
+.write_env: &write_env |
+  set -eu
+  : > .env
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) printf '%s\n' "$line" >> .env; continue ;;
+    esac
+    key=${line%%=*}
+    if [ "$key" = "$line" ]; then printf '%s\n' "$line" >> .env; continue; fi
+    if eval "[ \"\${${key}+set}\" = set ]"; then
+      eval "printf '%s=%s\n' \"\$key\" \"\$$key\"" >> .env
+    else
+      printf '%s\n' "$line" >> .env
+    fi
+  done < .env.example
+  echo "wrote .env — keys taken from CI variables:"
+  # Names only. The values are the point of the exercise.
+  while IFS= read -r line; do
+    key=${line%%=*}
+    case "$key" in ''|'#'*) continue ;; esac
+    if eval "[ \"\${${key}+set}\" = set ]"; then echo "  $key"; fi
+  done < .env.example
+
+build_image:
+  stage: build
+  image: docker:latest
+  script:
+    - docker build -t soc-mcp-splunk:${CI_COMMIT_SHORT_SHA} ./Splunk
+    - docker build -t soc-mcp-threatq:${CI_COMMIT_SHORT_SHA} ./Threatq
+    - docker build -t soc-mcp-confluence:${CI_COMMIT_SHORT_SHA} ./Confluence
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+code_test:
+  stage: test
+  image: python:3.12
+  script:
+    # Each connector's own requirements, not one of them for all three. They
+    # happen to match today; the day one of them needs a package the others do
+    # not, installing only Splunk's would fail the import of whichever gained
+    # the dependency and look like a code error.
+    - |
+      set -eu
+      for c in Splunk Threatq Confluence; do
+        pip install -q -r "$c/requirements.txt"
+      done
+    # Imported, not just compiled. A missing dependency, or a route function
+    # shadowing the module it imports, only shows up when the module runs —
+    # both have happened in this repo.
+    #
+    # Each connector refuses to start without its bearer token, so a throwaway
+    # one is supplied. It reaches nothing: no platform is contacted at import.
+    - |
+      set -eu
+      # Every value here is a throwaway. Each connector validates its config at
+      # import and refuses to start without one — which is the behaviour we
+      # want in production and the reason a bare import fails here. Nothing is
+      # contacted: validation reads the settings, it does not use them.
+      export MCP_AUTH_TOKEN=ci THREATQ_MCP_AUTH_TOKEN=ci CONFLUENCE_MCP_AUTH_TOKEN=ci
+      export SPLUNK_TOKEN=ci SPLUNK_ALLOWED_INDEXES=main
+      export THREATQ_CLIENT_ID=ci THREATQ_EMAIL=ci@example.invalid THREATQ_PASSWORD=ci
+      for c in Splunk Threatq Confluence; do
+        ( cd "$c" && python -c "import server" ) || { echo "$c failed to import"; exit 1; }
+        echo "  $c imports cleanly"
+      done
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+deploy_production:
+  stage: deploy
+  image: docker:latest
+  environment:
+    name: production
+    # The address GitLab shows and links to. It is where the service actually
+    # answers, so it comes from a variable — localhost here would be a link to
+    # the runner, which is not where anyone reads this from.
+    url: ${MCP_SERVER_URL}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - *write_env
+
+    - echo "========== 0. Is this pointing at the real thing? =========="
+    # The defaults in .env.example address a Splunk container and a ThreatQ
+    # that does not exist, and the Confluence connector can answer from sample
+    # playbooks. All three are right for a workstation and wrong here, and all
+    # three fail quietly: a connector talking to a stand-in returns confident
+    # answers about data nobody has.
+    - |
+      set -eu
+      . ./.env
+      fail=0
+      case "${SPLUNK_BASE_URL:-}" in
+        ""|*splunk:8089*|*localhost*|*127.0.0.1*)
+          echo "SPLUNK_BASE_URL is ${SPLUNK_BASE_URL:-unset} — set it to the real Splunk"; fail=1 ;;
+      esac
+      case "${THREATQ_BASE_URL:-}" in
+        ""|*threatq.local*|*://threatq[:/]*|*localhost*)
+          echo "THREATQ_BASE_URL is ${THREATQ_BASE_URL:-unset} — set it to the real ThreatQ"; fail=1 ;;
+      esac
+      if [ "${ALLOW_SAMPLE_PLAYBOOKS:-false}" = "true" ]; then
+        echo "ALLOW_SAMPLE_PLAYBOOKS is true — /match would answer from sample playbooks"; fail=1
+      fi
+      if [ "${SPLUNK_VERIFY_SSL:-true}" != "true" ] || [ "${THREATQ_VERIFY_SSL:-true}" != "true" ]; then
+        echo "TLS verification is off — fine for a self-signed lab cert, not for this"; fail=1
+      fi
+      [ "$fail" = 0 ] || { echo; echo "refusing to deploy against test doubles"; exit 1; }
+      echo "  endpoints look like production"
+
+    - echo "========== Build and start =========="
+    - docker compose up -d --build --wait
+    - echo "========== Health =========="
+    # localhost here is the container's own loopback, reached through
+    # docker compose exec — not the runner's. It is the right address
+    # for asking a service whether it came up.
+    # Each connector answers /health unauthenticated, and reports whether it
+    # can actually reach its platform — so a connector that starts but cannot
+    # see Splunk fails here rather than at the first alert that needed it.
+    - |
+      set -eu
+      for pair in soc-mcp-splunk:8200 soc-mcp-threatq:8300 soc-mcp-confluence:8600; do
+        name=${pair%%:*}; port=${pair##*:}; ok=no
+        for i in $(seq 1 20); do
+          if docker compose exec -T "$name" python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:$port/health',timeout=5).status==200 else 1)" 2>/dev/null; then ok=yes; break; fi
+          sleep 3
+        done
+        [ "$ok" = yes ] || { echo "$name never became healthy"; docker compose logs --tail 40 "$name"; exit 1; }
+        echo "  $name healthy"
+      done

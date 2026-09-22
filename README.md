@@ -54,6 +54,34 @@ service.
 
 `api-tests/` is a Bruno collection for the three connectors.
 
+## Test doubles, and keeping them out of production
+
+This repo runs against stand-ins on a workstation and against the real
+platforms everywhere else. The difference is not visible in an answer, which is
+why it is enforced rather than documented:
+
+| Setting | Workstation | Production |
+| --- | --- | --- |
+| `SPLUNK_BASE_URL` | a local Splunk container | the real search head |
+| `THREATQ_BASE_URL` | `threatq.local`, or the fake from the old stack | the real appliance |
+| `ALLOW_SAMPLE_PLAYBOOKS` | `true` | `false` |
+| `SPLUNK_VERIFY_SSL` / `THREATQ_VERIFY_SSL` | `false` for a self-signed lab cert | `true` |
+
+`ALLOW_SAMPLE_PLAYBOOKS` is the one that bites. With Confluence unconfigured
+the connector used to fall back to `Confluence/tests/playbooks.sample.json` —
+two playbooks written to exercise the matcher. They come back through `/match`
+in the same shape as a real one, with a version number, and an analyst reading
+"FALSE POSITIVE when: EICAR test file" has nothing telling them nobody wrote
+that for this estate.
+
+So the connector now refuses to start when Confluence is unconfigured unless
+the flag is explicitly set, `/match` and `/health` carry `samples: true` when
+it is, and every match comes back with a warning saying so.
+
+The deploy job checks all four before bringing anything up. A production
+pipeline pointed at a stand-in fails there rather than serving confident
+answers about data nobody has.
+
 ---
 
 ## Where this came from

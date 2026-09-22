@@ -89,7 +89,21 @@ async def sync() -> dict:
             _last_sync = {**_last_sync, "error": error}
             return _last_sync
     else:
-        loaded = pb.from_file(settings.PLAYBOOK_FILE)
+        if not settings.ALLOW_SAMPLE_PLAYBOOKS:
+            # Reached only if startup validation was bypassed. An empty corpus
+            # reports "no playbook covers this", which is true and checkable —
+            # sample playbooks reported as real are neither.
+            logger.error(
+                "not configured for Confluence and ALLOW_SAMPLE_PLAYBOOKS is false — "
+                "serving no playbooks rather than the samples"
+            )
+            loaded = []
+        else:
+            loaded = pb.from_file(settings.PLAYBOOK_FILE)
+            logger.warning(
+                "answering from %s — these playbooks are samples, not your runbooks",
+                settings.PLAYBOOK_FILE,
+            )
 
     _router = AlertRouter(loaded, settings.FUZZY_CUTOFF)
     _last_sync = {
@@ -133,7 +147,18 @@ async def match_route(request: Request) -> JSONResponse:
         "source": _last_sync.get("source"),
         "stale": bool(_last_sync.get("error")),
         "error": _last_sync.get("error"),
+        # Travels with the answer, not just in a log nobody reads during an
+        # incident. A playbook from the sample file looks exactly like one from
+        # the wiki — same fields, same version number — and the only difference
+        # is that nobody wrote it for this estate.
+        "samples": not settings.configured,
     }
+    if not settings.configured and result.get("matched"):
+        result["warning"] = (
+            "This came from the sample playbooks, not from Confluence. The "
+            "criteria below were written to exercise the matcher and do not "
+            "describe your detections."
+        )
     return JSONResponse(result)
 
 
@@ -151,6 +176,7 @@ async def health(_: Request) -> JSONResponse:
             "playbooks": len(_router.by_page),
             "source": _last_sync.get("source"),
             "stale": bool(_last_sync.get("error")),
+            "samples": not settings.configured,
             "confluence": await confluence_api.reachable(),
         }
     )

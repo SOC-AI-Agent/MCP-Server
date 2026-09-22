@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # Where to read playbooks from when Confluence is not configured. Lets the
     # stack run, and the tests run, without an Atlassian account.
     PLAYBOOK_FILE: str = "/playbooks/playbooks.json"
+    # Whether falling back to that file is allowed.
+    #
+    # It must not be, in production. The fallback answers /match from a handful
+    # of sample playbooks written to exercise the matcher — an analyst would
+    # read criteria for a detection nobody wrote, presented exactly like a real
+    # runbook, with the version number of a page that does not exist. There is
+    # nothing in the response to tell the two apart.
+    #
+    # Set to "true" only on a workstation or in CI.
+    ALLOW_SAMPLE_PLAYBOOKS: bool = False
 
     @property
     def allowed_hosts(self) -> list[str]:
@@ -55,4 +65,10 @@ def missing_settings() -> list[str]:
     missing = []
     if not settings.CONFLUENCE_MCP_AUTH_TOKEN:
         missing.append("CONFLUENCE_MCP_AUTH_TOKEN")
+    if not settings.configured and not settings.ALLOW_SAMPLE_PLAYBOOKS:
+        missing.append(
+            "CONFLUENCE_BASE_URL and CONFLUENCE_API_TOKEN — without them this "
+            "connector would answer from the sample playbooks, which are made up. "
+            "Set ALLOW_SAMPLE_PLAYBOOKS=true if that is what you want"
+        )
     return missing
