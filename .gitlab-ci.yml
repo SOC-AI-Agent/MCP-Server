@@ -117,11 +117,10 @@ deploy_production:
     - *write_env
 
     - echo "========== 0. Is this pointing at the real thing? =========="
-    # The defaults in .env.example address a Splunk container and a ThreatQ
-    # that does not exist, and the Confluence connector can answer from sample
-    # playbooks. All three are right for a workstation and wrong here, and all
-    # three fail quietly: a connector talking to a stand-in returns confident
-    # answers about data nobody has.
+    # The defaults in .env.example address a Splunk container and a ThreatQ that
+    # does not exist. Both are right for a workstation and wrong here, and both
+    # fail quietly: a connector talking to a stand-in returns confident answers
+    # about data nobody has.
     - |
       set -eu
       . ./.env
@@ -134,9 +133,9 @@ deploy_production:
         ""|*threatq.local*|*://threatq[:/]*|*localhost*)
           echo "THREATQ_BASE_URL is ${THREATQ_BASE_URL:-unset} — set it to the real ThreatQ"; fail=1 ;;
       esac
-      if [ "${ALLOW_SAMPLE_PLAYBOOKS:-false}" = "true" ]; then
-        echo "ALLOW_SAMPLE_PLAYBOOKS is true — /match would answer from sample playbooks"; fail=1
-      fi
+      case "${CONFLUENCE_BASE_URL:-}" in
+        "") echo "CONFLUENCE_BASE_URL is unset — the connector will refuse to start"; fail=1 ;;
+      esac
       if [ "${SPLUNK_VERIFY_SSL:-true}" != "true" ] || [ "${THREATQ_VERIFY_SSL:-true}" != "true" ]; then
         echo "TLS verification is off — fine for a self-signed lab cert, not for this"; fail=1
       fi

@@ -48,10 +48,6 @@ services:
       context: ./Confluence
     container_name: soc-mcp-confluence
     env_file: [.env]
-    volumes:
-      # Playbooks for a stack with no Confluence to read, so this comes up on a
-      # workstation with no Atlassian account.
-      - ./Confluence/tests:/playbooks:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8600/health', timeout=5).status==200 else 1)\""]
       interval: 30s

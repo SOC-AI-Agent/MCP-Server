@@ -89,21 +89,18 @@ async def sync() -> dict:
             _last_sync = {**_last_sync, "error": error}
             return _last_sync
     else:
-        if not settings.ALLOW_SAMPLE_PLAYBOOKS:
-            # Reached only if startup validation was bypassed. An empty corpus
-            # reports "no playbook covers this", which is true and checkable —
-            # sample playbooks reported as real are neither.
-            logger.error(
-                "not configured for Confluence and ALLOW_SAMPLE_PLAYBOOKS is false — "
-                "serving no playbooks rather than the samples"
-            )
-            loaded = []
-        else:
-            loaded = pb.from_file(settings.PLAYBOOK_FILE)
-            logger.warning(
-                "answering from %s — these playbooks are samples, not your runbooks",
-                settings.PLAYBOOK_FILE,
-            )
+        # Startup validation refuses this, so it is only reached if that was
+        # bypassed. Nothing is loaded and nothing is invented: /match answers
+        # "not configured", which is a fact, where a sample playbook would be
+        # a fabrication wearing the shape of one.
+        error = (
+            "CONFLUENCE_BASE_URL and CONFLUENCE_API_TOKEN are not set, so there "
+            "is nothing to read. No playbooks are loaded."
+        )
+        logger.error("%s", error)
+        _last_sync = {"at": None, "source": "unconfigured", "error": error, "count": 0}
+        _router = AlertRouter([], settings.FUZZY_CUTOFF)
+        return _last_sync
 
     _router = AlertRouter(loaded, settings.FUZZY_CUTOFF)
     _last_sync = {
@@ -139,6 +136,24 @@ async def match_route(request: Request) -> JSONResponse:
     if not alert_name:
         return JSONResponse({"error": "alert_name is required"}, status_code=400)
 
+    if not settings.configured:
+        # Not a miss. A miss means the wiki was searched and covers nothing;
+        # this means the wiki was never reached, and an analyst reading "no
+        # playbook" should not be told the first when it is the second.
+        return JSONResponse(
+            {
+                "matched": False,
+                "how": "unconfigured",
+                "playbook": None,
+                "note": (
+                    "This connector is not configured for Confluence, so no playbook "
+                    "was searched for. This is not the same as no playbook covering "
+                    "the alert. Set CONFLUENCE_BASE_URL and CONFLUENCE_API_TOKEN."
+                ),
+            },
+            status_code=503,
+        )
+
     result = _router.match(alert_name)
     # Said with the answer, not left for someone to ask: a match against a
     # corpus that failed to refresh is a match against yesterday's wiki.
@@ -147,18 +162,7 @@ async def match_route(request: Request) -> JSONResponse:
         "source": _last_sync.get("source"),
         "stale": bool(_last_sync.get("error")),
         "error": _last_sync.get("error"),
-        # Travels with the answer, not just in a log nobody reads during an
-        # incident. A playbook from the sample file looks exactly like one from
-        # the wiki — same fields, same version number — and the only difference
-        # is that nobody wrote it for this estate.
-        "samples": not settings.configured,
     }
-    if not settings.configured and result.get("matched"):
-        result["warning"] = (
-            "This came from the sample playbooks, not from Confluence. The "
-            "criteria below were written to exercise the matcher and do not "
-            "describe your detections."
-        )
     return JSONResponse(result)
 
 
@@ -176,7 +180,6 @@ async def health(_: Request) -> JSONResponse:
             "playbooks": len(_router.by_page),
             "source": _last_sync.get("source"),
             "stale": bool(_last_sync.get("error")),
-            "samples": not settings.configured,
             "confluence": await confluence_api.reachable(),
         }
     )
@@ -230,5 +233,5 @@ logger.info(
     "%s ready on :%d (confluence=%s)",
     settings.MCP_SERVER_NAME,
     settings.CONFLUENCE_MCP_PORT,
-    "configured" if settings.configured else f"file {settings.PLAYBOOK_FILE}",
+    "configured" if settings.configured else "NOT CONFIGURED — it will serve nothing",
 )

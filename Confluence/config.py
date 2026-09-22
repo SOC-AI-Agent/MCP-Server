@@ -35,19 +35,17 @@ class Settings(BaseSettings):
     # Re-read the space this often. Playbooks change without telling anyone, and
     # a stale one points at an index that was renamed.
     SYNC_INTERVAL_MINUTES: int = 30
-    # Where to read playbooks from when Confluence is not configured. Lets the
-    # stack run, and the tests run, without an Atlassian account.
-    PLAYBOOK_FILE: str = "/playbooks/playbooks.json"
-    # Whether falling back to that file is allowed.
+    # There is no fallback file, and deliberately so.
     #
-    # It must not be, in production. The fallback answers /match from a handful
-    # of sample playbooks written to exercise the matcher — an analyst would
-    # read criteria for a detection nobody wrote, presented exactly like a real
-    # runbook, with the version number of a page that does not exist. There is
-    # nothing in the response to tell the two apart.
+    # This used to read sample playbooks when Confluence was not configured, so
+    # the stack would come up on a workstation. They came back through /match
+    # in the shape of a real runbook — version number and all — and an analyst
+    # reading "FALSE POSITIVE when: EICAR test file" had nothing telling them
+    # nobody wrote that for this estate.
     #
-    # Set to "true" only on a workstation or in CI.
-    ALLOW_SAMPLE_PLAYBOOKS: bool = False
+    # Unconfigured now means unconfigured: the connector says so and answers
+    # nothing. "No playbook covers this alert" is a fact someone can act on.
+    # A made-up one is not.
 
     @property
     def allowed_hosts(self) -> list[str]:
@@ -65,10 +63,9 @@ def missing_settings() -> list[str]:
     missing = []
     if not settings.CONFLUENCE_MCP_AUTH_TOKEN:
         missing.append("CONFLUENCE_MCP_AUTH_TOKEN")
-    if not settings.configured and not settings.ALLOW_SAMPLE_PLAYBOOKS:
+    if not settings.configured:
         missing.append(
-            "CONFLUENCE_BASE_URL and CONFLUENCE_API_TOKEN — without them this "
-            "connector would answer from the sample playbooks, which are made up. "
-            "Set ALLOW_SAMPLE_PLAYBOOKS=true if that is what you want"
+            "CONFLUENCE_BASE_URL and CONFLUENCE_API_TOKEN — this connector has "
+            "nothing to read without them"
         )
     return missing

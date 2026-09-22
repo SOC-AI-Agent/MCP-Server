@@ -63,24 +63,25 @@ why it is enforced rather than documented:
 | Setting | Workstation | Production |
 | --- | --- | --- |
 | `SPLUNK_BASE_URL` | a local Splunk container | the real search head |
-| `THREATQ_BASE_URL` | `threatq.local`, or the fake from the old stack | the real appliance |
-| `ALLOW_SAMPLE_PLAYBOOKS` | `true` | `false` |
+| `THREATQ_BASE_URL` | `threatq.local`, or a stand-in | the real appliance |
 | `SPLUNK_VERIFY_SSL` / `THREATQ_VERIFY_SSL` | `false` for a self-signed lab cert | `true` |
 
-`ALLOW_SAMPLE_PLAYBOOKS` is the one that bites. With Confluence unconfigured
-the connector used to fall back to `Confluence/tests/playbooks.sample.json` —
-two playbooks written to exercise the matcher. They come back through `/match`
-in the same shape as a real one, with a version number, and an analyst reading
-"FALSE POSITIVE when: EICAR test file" has nothing telling them nobody wrote
-that for this estate.
+The deploy job checks all of them before bringing anything up. A pipeline
+pointed at a stand-in fails there rather than serving confident answers about
+data nobody has.
 
-So the connector now refuses to start when Confluence is unconfigured unless
-the flag is explicitly set, `/match` and `/health` carry `samples: true` when
-it is, and every match comes back with a warning saying so.
+### Confluence has no fallback
 
-The deploy job checks all four before bringing anything up. A production
-pipeline pointed at a stand-in fails there rather than serving confident
-answers about data nobody has.
+It used to read sample playbooks when `CONFLUENCE_BASE_URL` was unset, so the
+stack would come up without an Atlassian account. Those came back through
+`/match` in the shape of a real runbook — version number and all — and an
+analyst reading "FALSE POSITIVE when: EICAR test file" had nothing telling them
+nobody wrote that for this estate.
+
+That is gone. Unconfigured now means the connector refuses to start, and
+`/match` answers `503 how: "unconfigured"` rather than a miss. The two are
+different facts: a miss means the wiki was searched and covers nothing, and
+this means the wiki was never reached.
 
 ---
 
