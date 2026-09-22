@@ -1,0 +1,29 @@
+meta {
+  name: Catalog - with example values
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{mcp_splunk}}/catalog?values=true
+  body: none
+  auth: none
+}
+
+params:query {
+  values: true
+}
+
+headers {
+  Authorization: Bearer {{mcp_splunk_token}}
+}
+
+tests {
+  test("responds 2xx", function() {
+    expect(res.getStatus()).to.be.within(200, 300);
+  });
+}
+
+docs {
+  Example values are REAL DATA from the index. Off by default for that reason, and every call is logged with whether values were asked for.
+}

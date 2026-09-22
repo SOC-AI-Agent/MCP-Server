@@ -1,0 +1,16 @@
+meta {
+  name: 6 mcp-threatq
+  seq: 6
+}
+
+docs {
+  
+  Publishes no port. Reach it from inside soc-ai_soc-network — use the `docker`
+  environment — or add a `ports:` mapping while testing.
+  
+  Stateless, so a single JSON-RPC POST works with no initialize handshake.
+  Replies arrive as SSE: `event: message` then `data: {json}`.
+  
+  Starts only with credentials configured. Without them the container restarts
+  and every request here fails — which is the intended behaviour, not a bug.
+}

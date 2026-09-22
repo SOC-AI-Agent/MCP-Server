@@ -1,0 +1,43 @@
+meta {
+  name: Match — renamed detection (fuzzy)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{mcp_confluence}}/match
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_confluence_token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "alert_name": "Malware detected in download file"
+  }
+}
+
+tests {
+  test("200", function() { expect(res.getStatus()).to.equal(200); });
+  test("matched, and admits it guessed", function() {
+    expect(res.getBody().matched).to.equal(true);
+    expect(res.getBody().how).to.equal("fuzzy");
+    expect(res.getBody().similarity).to.be.above(0.85);
+  });
+}
+
+docs {
+  "download" against "downloaded" — one letter, 0.971.
+
+  `how` is returned with every answer for this reason. A fuzzy match is a guess
+  that cleared a threshold, and an analyst reading criteria written for a
+  detection with a different name should be told that is what they are reading.
+  The rendered playbook block says so to the model as well.
+
+  Lower FUZZY_CUTOFF and this starts matching things it should not; raise it
+  and renamed detections stop resolving. 0.85 is the notebook's figure.
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Catalog - names only
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{mcp_splunk}}/catalog
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_splunk_token}}
+}
+
+tests {
+  test("responds 2xx", function() {
+    expect(res.getStatus()).to.be.within(200, 300);
+  });
+}
+
+docs {
+  Indexes, sourcetypes and field names this token can see.
+  
+  A route, not a tool: the model cannot reach it. An operator pulls the catalog; a person decides what of it the model is told.
+}

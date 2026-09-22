@@ -1,0 +1,46 @@
+meta {
+  name: Tools - search_events
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{mcp_splunk}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json, text/event-stream
+  Authorization: Bearer {{mcp_splunk_token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "search_events",
+      "arguments": {
+        "index": "main",
+        "earliest": "-24h",
+        "filters": {
+          "action": "blocked"
+        },
+        "max_count": 3
+      }
+    }
+  }
+}
+
+tests {
+  test("responds 2xx", function() {
+    expect(res.getStatus()).to.be.within(200, 300);
+  });
+}
+
+docs {
+  Every result carries the SPL that produced it — the fastest way to spot a wrong field name.
+}

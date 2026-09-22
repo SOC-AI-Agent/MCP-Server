@@ -1,0 +1,13 @@
+meta {
+  name: 5 mcp-splunk
+  seq: 5
+}
+
+docs {
+  
+  Publishes no port. Reach it from inside soc-ai_soc-network — use the `docker`
+  environment — or add a `ports:` mapping while testing.
+  
+  Stateless, so a single JSON-RPC POST works with no initialize handshake.
+  Replies arrive as SSE: `event: message` then `data: {json}`.
+}

@@ -31,6 +31,28 @@ three.
 between repos; the backend's compose points at `../soc-mcp-server/Splunk/catalog`
 by default and takes `MCP_CATALOG_PATH` to override it.
 
+## Tooling
+
+`scripts/` is everything that produces or checks the data catalogue:
+
+| | |
+| --- | --- |
+| `export_splunk_catalog.sh` | Pulls indexes, sourcetypes and fields out of Splunk. |
+| `verify_catalog_export.py` | Says whether an export is complete enough to use — exit 0 or 1, so CI can branch on it. |
+| `make_catalog_template.py` | Turns that export into a catalogue skeleton, marking every guess. |
+| `plan_query_agents.py` | Groups sourcetypes into query agents. |
+
+`.github/workflows/splunk-catalog.yml` runs the first two: it exports into
+`Splunk/table/` only when there is not already a complete export there.
+
+`docs/splunk-catalog.md` is the long version — what to export, what the files
+mean, and what to check before trusting one in production.
+
+`notebooks/` is where the Confluence connector came from: `playbook_rag.ipynb`
+built and measured the retrieval layer, and `router.py` here is that work as a
+service.
+
+`api-tests/` is a Bruno collection for the three connectors.
 
 ---
 

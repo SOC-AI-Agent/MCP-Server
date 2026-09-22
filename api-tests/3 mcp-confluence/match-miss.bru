@@ -1,0 +1,45 @@
+meta {
+  name: Match — nothing covers it
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{mcp_confluence}}/match
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_confluence_token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "alert_name": "An alert nobody has written a runbook for"
+  }
+}
+
+tests {
+  test("200 — a miss is an answer, not an error", function() {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("says so plainly", function() {
+    expect(res.getBody().matched).to.equal(false);
+    expect(res.getBody().how).to.equal("miss");
+    expect(res.getBody().playbook).to.equal(null);
+  });
+  test("explains rather than just refusing", function() {
+    expect(res.getBody().note).to.be.a("string").and.not.empty;
+  });
+}
+
+docs {
+  The case that matters most.
+
+  A playbook that nearly matches is worse than none: the analyst reads criteria
+  written for a different detection and has no way to tell. So below the
+  cutoff, the answer is a miss — and `note` says how many playbooks were
+  searched, so "no playbook" can be told apart from "the corpus is empty".
+}

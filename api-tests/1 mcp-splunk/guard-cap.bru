@@ -1,0 +1,42 @@
+meta {
+  name: Guard - row cap
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{mcp_splunk}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json, text/event-stream
+  Authorization: Bearer {{mcp_splunk_token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tools/call",
+    "params": {
+      "name": "search_events",
+      "arguments": {
+        "index": "main",
+        "max_count": 9999
+      }
+    }
+  }
+}
+
+tests {
+  test("capped at SPLUNK_MAX_COUNT", function() {
+    expect(res.getBody()).to.include("head 200");
+  });
+}
+
+docs {
+  The SPL should say `| head 200`, whatever was asked for.
+}

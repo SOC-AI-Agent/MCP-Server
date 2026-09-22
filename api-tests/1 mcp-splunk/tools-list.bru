@@ -1,0 +1,38 @@
+meta {
+  name: Tools - list
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{mcp_splunk}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json, text/event-stream
+  Authorization: Bearer {{mcp_splunk_token}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }
+}
+
+tests {
+  test("responds 2xx", function() {
+    expect(res.getStatus()).to.be.within(200, 300);
+  });
+  test("catalog is not among them", function() {
+    expect(res.getBody()).to.not.include("\"catalog\"");
+  });
+}
+
+docs {
+  What the model is offered, with the JSON Schema it sees.
+}

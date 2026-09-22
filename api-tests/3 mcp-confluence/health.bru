@@ -1,0 +1,35 @@
+meta {
+  name: Health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{mcp_confluence}}/health
+  body: none
+  auth: none
+}
+
+tests {
+  test("responds 2xx", function() {
+    expect(res.getStatus()).to.be.within(200, 300);
+  });
+  test("has playbooks loaded", function() {
+    expect(res.getBody().playbooks).to.be.above(0);
+  });
+  test("says whether the corpus is stale", function() {
+    expect(res.getBody()).to.have.property("stale");
+  });
+}
+
+docs {
+  Unauthenticated so a container healthcheck needs no token.
+
+  `playbooks: 0` means the sync found nothing — either the space is empty, the
+  credentials are wrong, or PLAYBOOK_FILE does not exist. An empty corpus
+  answers every match with "no playbook", which is indistinguishable from a
+  real gap in the wiki, so check this before trusting a miss.
+
+  `source` is `confluence` or `file`. `stale: true` means a sync failed and the
+  previous corpus is still being served.
+}

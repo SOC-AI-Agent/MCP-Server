@@ -1,0 +1,168 @@
+# Bootstrap the Splunk data catalog: what indexes, sourcetypes and fields this
+# estate actually has, exported into mcp-server/Splunk/table/.
+#
+# It fetches only when the table is not already there. Once the directory holds
+# a complete export the job is a few seconds of checking and nothing else, so
+# leaving it on `push` costs nothing and means a repo that has never had one
+# grows it by itself. "Complete" is not "the directory exists" — see the
+# decide step.
+#
+# Needs a runner that can reach Splunk's management port (8089). A
+# GitHub-hosted runner cannot see a Splunk on a private network; point the
+# CATALOG_RUNNER variable at a self-hosted runner inside it.
+#
+#   Secrets   SPLUNK_URL     https://splunk.internal:8089
+#             SPLUNK_TOKEN   a Splunk auth token (Bearer …) or user:password
+#   Variables CATALOG_RUNNER  runner label          (default ubuntu-latest)
+#             SPLUNK_INSECURE 1 to skip TLS verify  (default 0 — verify)
+#             CATALOG_WINDOW  how far back to look  (default -30d)
+#             CATALOG_SAMPLE  events per sourcetype (default 200)
+
+name: Splunk catalog
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-export even though a table is already committed"
+        type: boolean
+        default: false
+
+# Two runs exporting into the same path would race on the commit. Never cancel
+# one in flight: it is mid-export against production Splunk.
+concurrency:
+  group: splunk-catalog
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  TABLE_DIR: mcp-server/Splunk/table
+
+jobs:
+  export:
+    runs-on: ${{ vars.CATALOG_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit step rebases before pushing, and a rebase onto a branch
+          # this clone only has one commit of has nothing to rebase against.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── is one already there? ───────────────────────────────────────────
+      # The same check that validates a fresh export, so "we already have one"
+      # and "the export worked" can never mean different things. A directory
+      # left behind by an export that died is not a catalog: it would tell the
+      # agent this estate has three sourcetypes, and the agent would search
+      # those three, find nothing, and report that nothing happened.
+      - name: Decide whether to export
+        id: decide
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "forced by hand — exporting even though a table may exist"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if python3 scripts/verify_catalog_export.py "$TABLE_DIR"; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "A complete catalog is already committed. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── do we have what we need to export? ──────────────────────────────
+      # Asked before any network call, so a missing secret says so instead of
+      # surfacing as a curl error forty lines down.
+      #
+      # A push with no secrets warns rather than fails. Failing every commit
+      # over a job that only has to succeed once teaches people to ignore the
+      # red X, and then they ignore the one that matters. Asking for the run by
+      # hand is different: you wanted it to happen, so being told it cannot is
+      # the useful answer.
+      - name: Check credentials
+        id: creds
+        if: steps.decide.outputs.needed == 'true'
+        env:
+          SPLUNK_URL: ${{ secrets.SPLUNK_URL }}
+          SPLUNK_TOKEN: ${{ secrets.SPLUNK_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$SPLUNK_URL" ]   && missing="$missing SPLUNK_URL"
+          [ -z "$SPLUNK_TOKEN" ] && missing="$missing SPLUNK_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### No Splunk catalog"
+              echo
+              echo "\`$TABLE_DIR\` has no complete export and these secrets are unset:\`$missing\`."
+              echo
+              echo "Until one exists the Splunk MCP server falls back to CIM field names,"
+              echo "which are right only on a normalised estate. On anything else the agent"
+              echo "filters on fields that do not exist and reports finding nothing."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::error::missing secrets:$missing"
+              exit 1
+            fi
+            echo "::warning::missing secrets:$missing — skipping the export"
+          else
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── export ──────────────────────────────────────────────────────────
+      # Into a staging directory, never straight into the repo. An export that
+      # dies halfway then leaves the committed catalog untouched instead of
+      # replacing it with a shorter one.
+      - name: Export from Splunk
+        if: steps.decide.outputs.needed == 'true' && steps.creds.outputs.have == 'true'
+        env:
+          SPLUNK_URL: ${{ secrets.SPLUNK_URL }}
+          SPLUNK_AUTH: ${{ secrets.SPLUNK_TOKEN }}
+          SPLUNK_INSECURE: ${{ vars.SPLUNK_INSECURE || '0' }}
+          WINDOW: ${{ vars.CATALOG_WINDOW || '-30d' }}
+          SAMPLE: ${{ vars.CATALOG_SAMPLE || '200' }}
+          OUT: ${{ runner.temp }}/catalog-staging
+        run: bash scripts/export_splunk_catalog.sh
+
+      - name: Verify the export
+        if: steps.decide.outputs.needed == 'true' && steps.creds.outputs.have == 'true'
+        run: python3 scripts/verify_catalog_export.py "${{ runner.temp }}/catalog-staging"
+
+      # ── publish ─────────────────────────────────────────────────────────
+      - name: Commit the catalog
+        if: steps.decide.outputs.needed == 'true' && steps.creds.outputs.have == 'true'
+        run: |
+          rm -rf "$TABLE_DIR"
+          mkdir -p "$(dirname "$TABLE_DIR")"
+          cp -R "${{ runner.temp }}/catalog-staging" "$TABLE_DIR"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A "$TABLE_DIR"
+
+          if git diff --cached --quiet; then
+            echo "The export matches what is already committed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git commit -m "chore(catalog): export what this Splunk actually holds"
+          # main may have moved while the export ran against a live Splunk.
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+
+          {
+            echo "### Catalog exported"
+            echo
+            python3 scripts/verify_catalog_export.py "$TABLE_DIR"
+            echo
+            echo "It lists what is there. What each sourcetype is *for*, and which"
+            echo "field carries which meaning, is still a person's to write — see"
+            echo "\`catalog/splunk-catalog.json\` and docs/splunk-catalog.md."
+          } >> "$GITHUB_STEP_SUMMARY"
