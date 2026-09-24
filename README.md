@@ -58,8 +58,6 @@ mean, and what to check before trusting one in production.
 built and measured the retrieval layer, and `router.py` here is that work as a
 service.
 
-`api-tests/` is a Bruno collection for the three connectors.
-
 `tests/` is a pytest suite that needs no platform and no running stack: it loads
 each connector in-process, with the platform replaced by a stand-in that answers
 whatever a case says. It checks what the routes do with a bad token or a body
