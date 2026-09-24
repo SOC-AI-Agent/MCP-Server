@@ -28,7 +28,7 @@ three.
   of indicator.
 
 `soc-backend` mounts this directory read-only. It is the one file dependency
-between repos; the backend's compose points at `../soc-mcp-server/Splunk/catalog`
+between repos; the backend's compose points at `../MCP-Server/Splunk/catalog`
 by default and takes `MCP_CATALOG_PATH` to override it.
 
 ## Tooling
@@ -59,6 +59,45 @@ service.
 
 `api-tests/` is a Bruno collection for the three connectors.
 
+`tests/` is a pytest suite that needs no platform and no running stack: it loads
+each connector in-process, with the platform replaced by a stand-in that answers
+whatever a case says. It checks what the routes do with a bad token or a body
+that is not a JSON object, what `/check-connection` reports for each way a
+platform can fail, and that Confluence answering with a login page does not kill
+the connector.
+
+```bash
+pip install -r tests/requirements.txt
+python -m pytest
+```
+
+The `code_test` job runs it on every branch.
+
+## Platforms outside Docker
+
+Splunk, ThreatQ and Confluence are not part of this stack. They run on the
+company network and the connectors reach them at `SPLUNK_BASE_URL`,
+`THREATQ_BASE_URL` and `CONFLUENCE_BASE_URL`. What that asks of the machine that
+hosts these containers:
+
+- **A route and an open port** from this host to each platform (Splunk's
+  management port `8089`, `443` for the others). Traffic leaves the containers
+  through the host, so the platforms see **the host's address** — that is the one
+  to allow if they restrict sources.
+- **DNS** that resolves the company names from inside a container. Containers
+  use the host's resolvers through Docker; if a name does not resolve, use the
+  address or set `dns:` on the service.
+- **Trust in their certificates.** An internal CA is not in the container's CA
+  list. Put its PEM in `certs/` and set `SSL_CERT_FILE=/certs/<file>.pem` in
+  `.env`; `*_VERIFY_SSL` stays `true`, and the deploy job refuses to run with it
+  off. `SSL_CERT_FILE` replaces the built-in list, so the file must hold every CA
+  the three platforms chain to. A certificate has to name the host you call: an
+  address in `*_BASE_URL` needs the address in the certificate's SAN.
+
+The deploy job checks all of this from inside each container, after it starts:
+`failed_at: reach` in its output is one of the three above. See "Check it is
+connected" in each connector's README.
+
 ## Test doubles, and keeping them out of production
 
 This repo runs against stand-ins on a workstation and against the real
@@ -68,7 +107,7 @@ why it is enforced rather than documented:
 | Setting | Workstation | Production |
 | --- | --- | --- |
 | `SPLUNK_BASE_URL` | a local Splunk container | the real search head |
-| `THREATQ_BASE_URL` | `threatq.local`, or a stand-in | the real appliance |
+| `THREATQ_BASE_URL` | the real appliance — no stand-in ships | the real appliance |
 | `SPLUNK_VERIFY_SSL` / `THREATQ_VERIFY_SSL` | `false` for a self-signed lab cert | `true` |
 
 The deploy job checks all of them before bringing anything up. A pipeline
@@ -103,7 +142,7 @@ git clone https://gitlab.com/agentic-soc/mcp-server.git  MCP-Server
 
 cd Backend
 ./deploy/dev-setup.sh                            # writes .env in all four
-docker compose -f deploy/dev.yml up -d --build   # http://localhost:3000
+docker compose -f deploy/dev.yml up -d --build   # http://localhost:3001
 ```
 
 The script lives in Backend because three of the secrets it generates have to

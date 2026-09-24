@@ -32,7 +32,8 @@ re-run by hand.
 | --- | --- |
 | `server.py` | MCP tool definitions and the streamable-HTTP app. |
 | `spl.py` | Builds and validates every search string. The safety boundary. |
-| `splunk_api.py` | HTTP client for the Splunk REST API. **Not** an MCP client. |
+| `splunk_api.py` | HTTP client for the Splunk REST API, and the connection check. **Not** an MCP client. |
+| `check_connection.py` | Calls `/check-connection` from inside the container; exit 0 or 1, so CI can branch on it. |
 | `auth.py` | Bearer-token middleware in front of the transport. |
 | `config.py` | Env to typed settings, plus the startup preconditions. |
 
@@ -111,11 +112,58 @@ docker compose exec soc-mcp-splunk python -c \
   "import urllib.request,json; print(urllib.request.urlopen('http://localhost:8200/health').read())"
 ```
 
+### Check it is connected
+
+```bash
+docker compose exec -T soc-mcp-splunk python check_connection.py
+```
+
+```json
+{"connected":true,"base_url":"https://splunk.example.com:8089","latency_ms":140,"splunk_version":"9.2.1"}
+```
+
+It checks three things in order and says which one failed:
+
+| `failed_at` | Meant | Usually |
+| --- | --- | --- |
+| `reach` | nothing answered, or what answered is not Splunk's management API | wrong `SPLUNK_BASE_URL` — the management port is `8089`, not the web UI on `8000` — or DNS, a firewall, a certificate the container does not trust (`SPLUNK_VERIFY_SSL`) |
+| `auth` | `SPLUNK_TOKEN` was refused (401/403) | wrong or expired token |
+| `search` | authenticated, but a search could not be run | the token's role lacks the `search` capability, or Splunk is overloaded |
+
+```json
+{"connected":false,"base_url":"https://splunk.example.com:8089","latency_ms":95,"failed_at":"auth","error":"Splunk rejected SPLUNK_TOKEN (401)"}
+```
+
+The script calls `GET /check-connection` with the connector's own token, read
+from the container's environment so it is never on a command line. The route
+answers `200` when connected and `502` when not, and sits behind the bearer
+token unlike `/health`: each call goes out to Splunk and runs a search.
+
+The search is a fixed `| makeresults` — it needs the same capability as a real
+one, reads no index and returns one synthetic row. A pass means the token can
+search. The deploy job runs this after the containers are up, and fails the
+pipeline if it exits 1.
+
+**Indexes.** When `SPLUNK_ALLOWED_INDEXES` is a list, the answer also says which
+of them showed events in the last 30 days (a `| tstats count … by index`, built
+from the allowlist through `spl.py`):
+
+```json
+{"connected":true, … "indexes":{"with_events":["notable"],"no_events_in_30d":["network"]},
+ "warning":"no events seen in the last 30 days in network: the token may not be able to read them, or they are quiet. …"}
+```
+
+This is advice, never a failure. A search over an index the token cannot read
+returns nothing rather than an error, so a quiet index and an unreadable one look
+the same from here: the ones listed in `with_events` are certainly readable, and
+for the others `GET /catalog` shows what the token can really see. It is skipped
+when the allowlist is `*`.
+
 Call a tool by hand with curl — the server is stateless, so a single JSON-RPC
 POST works with no handshake:
 
 ```bash
-docker run --rm --network soc-ai_soc-network curlimages/curl -s -X POST \
+docker run --rm --network soc-network curlimages/curl -s -X POST \
   http://soc-mcp-splunk:8200/mcp \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H 'Content-Type: application/json' \

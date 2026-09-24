@@ -165,10 +165,17 @@ code_test:
       export MCP_AUTH_TOKEN=ci THREATQ_MCP_AUTH_TOKEN=ci CONFLUENCE_MCP_AUTH_TOKEN=ci
       export SPLUNK_TOKEN=ci SPLUNK_ALLOWED_INDEXES=main
       export THREATQ_CLIENT_ID=ci THREATQ_EMAIL=ci@example.invalid THREATQ_PASSWORD=ci
+      export CONFLUENCE_BASE_URL=https://ci.invalid CONFLUENCE_API_TOKEN=ci
       for c in Splunk Threatq Confluence; do
         ( cd "$c" && python -c "import server" ) || { echo "$c failed to import"; exit 1; }
         echo "  $c imports cleanly"
       done
+    # What each route does with a body or a token it did not expect. Nothing
+    # here contacts a platform; tests/conftest.py supplies its own environment.
+    - |
+      set -eu
+      pip install -q pytest
+      python -m pytest tests -q
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
@@ -194,17 +201,18 @@ deploy_production:
     # The address GitLab shows and links to. It is where the service actually
     # answers, so it comes from a variable — localhost here would be a link to
     # the runner, which is not where anyone reads this from.
-    url: ${MCP_SERVER_URL}
+    url: '$MCP_SERVER_URL'
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - *write_env
 
     - echo "========== 0. Is this pointing at the real thing? =========="
-    # The defaults in .env.example address a Splunk container and a ThreatQ that
-    # does not exist. Both are right for a workstation and wrong here, and both
-    # fail quietly: a connector talking to a stand-in returns confident answers
-    # about data nobody has.
+    # A URL that is unset, or is one of the old workstation stand-ins (a Splunk
+    # container, threatq.local), is not a platform. .env.example leaves them
+    # blank, and a blank one fails quietly: the connector starts, and the first
+    # sign is an alert that got no answer. Splunk, ThreatQ and Confluence all run
+    # outside this Docker network, so each has to be set to where it really is.
     - |
       set -eu
       . ./.env
@@ -232,9 +240,10 @@ deploy_production:
     # localhost here is the container's own loopback, reached through
     # docker compose exec — not the runner's. It is the right address
     # for asking a service whether it came up.
-    # Each connector answers /health unauthenticated, and reports whether it
-    # can actually reach its platform — so a connector that starts but cannot
-    # see Splunk fails here rather than at the first alert that needed it.
+    # Each connector answers /health unauthenticated. Only the status code is
+    # read here: it says the process is up, not that its platform is reachable
+    # (the body carries that as a flag, which this loop does not look at).
+    # Splunk, ThreatQ and Confluence are checked properly in the step after this one.
     - |
       set -eu
       for pair in soc-mcp-splunk:8200 soc-mcp-threatq:8300 soc-mcp-confluence:8600; do
@@ -246,3 +255,30 @@ deploy_production:
         [ "$ok" = yes ] || { echo "$name never became healthy"; docker compose logs --tail 40 "$name"; exit 1; }
         echo "  $name healthy"
       done
+
+    - echo "========== Platform connections =========="
+    # Healthy is not connected. Each of these goes out to its platform with the
+    # service account and checks the host answers, the credentials are accepted
+    # and the account can do what the connector needs (search in Splunk, read
+    # indicators in ThreatQ, see the playbook space in Confluence). None of the
+    # three runs in this Docker network: each is reached over the company network
+    # from this host, so a firewall, a DNS name or an internal CA the container
+    # does not trust shows up here as failed_at "reach". A wrong token turns the
+    # pipeline red here, with
+    # the step that failed printed above — not at the first alert that needed
+    # an answer. Containers are already up by now; red is the signal, there is
+    # no rollback.
+    #
+    # Both are always checked, so one failing does not hide the other. One
+    # attempt each, on purpose: retrying a rejected password is how an account
+    # gets locked. A transient failure is a re-run of the job.
+    - |
+      set -eu
+      fail=0
+      for name in soc-mcp-splunk soc-mcp-threatq soc-mcp-confluence; do
+        echo "--- $name"
+        docker compose exec -T "$name" python check_connection.py || fail=1
+        echo
+      done
+      [ "$fail" = 0 ] || { echo "a platform is not usable — failed_at and error are above"; exit 1; }
+      echo "  Splunk, ThreatQ and Confluence connected"

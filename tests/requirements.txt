@@ -1,0 +1,2 @@
+-r ../Splunk/requirements.txt
+pytest>=8

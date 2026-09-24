@@ -59,9 +59,10 @@ string for something downstream to guess at.
 
 ## Running without Confluence
 
-Leave `CONFLUENCE_BASE_URL` empty and it reads `PLAYBOOK_FILE`
-(`tests/playbooks.sample.json`), so the stack comes up on a workstation with no
-Atlassian account and the matching can be exercised.
+You cannot. There is no sample-playbook fallback: without `CONFLUENCE_BASE_URL`
+and `CONFLUENCE_API_TOKEN` the connector refuses to start, and `/match` would
+answer `503 how: "unconfigured"` if it did. Confluence runs outside this Docker
+network, on the company network, and is reached at `CONFLUENCE_BASE_URL`.
 
 ## Settings
 
@@ -74,6 +75,32 @@ Atlassian account and the matching can be exercised.
 | `CONFLUENCE_API_PATH` | `/rest/api`. Cloud needs `/wiki` in the base URL; Server and DC do not |
 | `FUZZY_CUTOFF` | `0.85` |
 | `SYNC_INTERVAL_MINUTES` | `30` |
+
+## Check it is connected
+
+```bash
+docker compose exec -T soc-mcp-confluence python check_connection.py
+```
+
+```json
+{"connected":true,"base_url":"https://wiki.example.com","space_key":"SOC","latency_ms":180}
+```
+
+One authenticated read of the space's own record — no page is fetched and
+nothing is written — and the answer says where it stopped:
+
+| `failed_at` | Meant | Usually |
+| --- | --- | --- |
+| `config` | nothing to connect with | `CONFLUENCE_BASE_URL` or `CONFLUENCE_API_TOKEN` unset |
+| `reach` | no answer, or not Confluence's REST API | wrong URL, DNS, a firewall, an internal CA the container does not trust (see `SSL_CERT_FILE` in `../.env.example`), or a login page — an SSO gateway answers with one, sometimes as a `200` |
+| `auth` | credentials refused (401) | wrong `CONFLUENCE_API_TOKEN` or `CONFLUENCE_EMAIL` |
+| `read` | authenticated, but the space is not visible (403/404) | wrong `CONFLUENCE_SPACE_KEY`, no view permission on it, or a `CONFLUENCE_BASE_URL` missing a path such as `/wiki` |
+
+The script calls `GET /check-connection` with the connector's own token, read
+from the container's environment. The route answers `200` when connected and
+`502` when not, and sits behind the bearer token unlike `/health`. The deploy
+job runs the script after the containers are up and fails the pipeline if it
+exits 1. `/health` only says the process is up and whether the last read worked.
 
 ## When a sync fails
 

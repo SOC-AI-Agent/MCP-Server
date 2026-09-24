@@ -22,6 +22,9 @@ services:
       # edits it with the rest of the repo, and nothing in the container has
       # any business rewriting it.
       - ./Splunk/catalog:/catalog:ro
+      # The company CA, when the platform's certificate is signed by one. See
+      # SSL_CERT_FILE in .env.example.
+      - ./certs:/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8200/health', timeout=5).status==200 else 1)\""]
       interval: 30s
@@ -35,6 +38,8 @@ services:
       context: ./Threatq
     container_name: soc-mcp-threatq
     env_file: [.env]
+    volumes:
+      - ./certs:/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8300/health', timeout=5).status==200 else 1)\""]
       interval: 30s
@@ -48,6 +53,8 @@ services:
       context: ./Confluence
     container_name: soc-mcp-confluence
     env_file: [.env]
+    volumes:
+      - ./certs:/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8600/health', timeout=5).status==200 else 1)\""]
       interval: 30s
