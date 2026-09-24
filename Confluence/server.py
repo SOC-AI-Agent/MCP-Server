@@ -1,14 +1,19 @@
 """
 Confluence playbook connector.
 
-Answers one question well: which playbook covers this alert, and what does it
-say. The backend asks it over a plain route at the start of triage, before any
-model runs, because matching an alert name to a runbook has one right answer
-and should not cost an inference.
+Holds the Confluence credentials and reads the playbook space. The backend
+reads the pages here on a schedule and sends them to the AI service, which
+extracts, embeds and matches them — matching moved there with the embedding
+tier, and the backend no longer calls /match.
+
+    GET  /pages                             -> every page, storage XHTML unparsed
+    GET  /check-connection                  -> can Confluence be read right now
+    GET  /health
+
+Still here from before, and no longer on the backend's path:
 
     POST /match     {"alert_name": "..."}   -> the playbook, or an honest miss
     POST /sync                              -> re-read the space now
-    GET  /health
 
 The MCP tools are for an agent that wants to look further: read a playbook it
 was not given, or list what exists. Neither can write.
@@ -171,6 +176,49 @@ async def match_route(request: Request) -> JSONResponse:
 @mcp.custom_route("/sync", methods=["POST"])
 async def sync_route(_: Request) -> JSONResponse:
     return JSONResponse(await sync())
+
+
+@mcp.custom_route("/pages", methods=["GET"])
+async def pages_route(_: Request) -> JSONResponse:
+    """
+    Every current page in the playbook space, as Confluence stores it.
+
+    The backend reads this on a schedule and sends it to the AI service, which
+    extracts the playbooks, embeds them and answers the matching. This connector
+    only reads: it is where the Confluence credentials are, so it is the one
+    thing that talks to Confluence, and it does not decide what a page means.
+
+        GET /pages -> {space_key, count, pages: [{id, title, version, url, body}]}
+
+    `body` is the storage-format XHTML, unparsed. 502 when Confluence cannot be
+    read — never an empty list, which the caller would take for an empty space.
+    """
+    if not settings.configured:
+        return JSONResponse(
+            {"error": "CONFLUENCE_BASE_URL and CONFLUENCE_API_TOKEN are not set"},
+            status_code=503,
+        )
+    try:
+        pages = await confluence_api.fetch_pages()
+    except confluence_api.ConfluenceError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+    base = settings.CONFLUENCE_BASE_URL.rstrip("/")
+    return JSONResponse({
+        "space_key": settings.CONFLUENCE_SPACE_KEY,
+        "count": len(pages),
+        "pages": [
+            {
+                "id": str(page.get("id") or ""),
+                "title": page.get("title") or "",
+                "version": (page.get("version") or {}).get("number"),
+                "url": base + ((page.get("_links") or {}).get("webui") or ""),
+                "body": ((page.get("body") or {}).get("storage") or {}).get("value") or "",
+            }
+            for page in pages
+            if isinstance(page, dict)
+        ],
+    })
 
 
 @mcp.custom_route("/check-connection", methods=["GET"])

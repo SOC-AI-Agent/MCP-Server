@@ -7,7 +7,7 @@ and Confluence also publish MCP tools an agent can call.
 | --- | --- | --- | --- |
 | `Splunk/` | 8200 | Running searches. The backend builds the SPL from a plan; this refuses anything that is not a read-only search over an allowed index. | `POST /query`, nothing else a caller uses. **No MCP, no model** — the backend plans each search from the catalogue and writes the SPL; this checks it (read-only, allowed indexes) and runs it. |
 | `Threatq/` | 8300 | Indicator reputation. | `POST /lookup` for the backend; the `lookup_indicator` tool for an agent (none uses it yet). |
-| `Confluence/` | 8600 | Which playbook covers an alert, and what it says. | `POST /match` for the backend; read-only tools for an agent. |
+| `Confluence/` | 8600 | The playbook space. Holds the Confluence credentials and reads the pages; matching them to alerts is the AI service's job now (`AI-Service/playbooks/`). | `GET /pages` for the backend's worker, which passes the pages to the AI service to index. `POST /match` and the read-only tools remain, but nothing on the triage path calls them. |
 
 ```bash
 cp .env.example .env     # platform credentials and one bearer token each
