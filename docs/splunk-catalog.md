@@ -45,33 +45,12 @@ curl -s "http://soc-mcp-splunk:8200/catalog" -H "Authorization: Bearer $MCP_AUTH
 | audit | ไม่มี | log ทุกครั้งว่าใครเรียก ขอ values ไหม |
 | ตรงกับที่ agent เห็น | ขึ้นกับ credential ที่ใช้รัน | ใช้ token เดียวกับ agent เป๊ะ |
 
-### ⚠️ Agent เข้าถึงไม่ได้ — โดยตั้งใจ
+### ผู้เรียกมีแต่คน
 
-`/catalog` เป็น **custom route ไม่ใช่ MCP tool** จึงไม่โผล่ใน `tools/list` model
-มองไม่เห็นและเรียกไม่ได้
-
-ยืนยันได้:
-
-```bash
-mcp '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | sed -n 's/^data: //p' \
-  | python3 -c "import json,sys; print([t['name'] for t in json.load(sys.stdin)['result']['tools']])"
-```
-```
-['list_indexes', 'search_events', 'alert_frequency', 'related_events']
-```
-
-**เหตุผล:** tool ที่ "สำรวจทุก index ทุก field พร้อมค่าตัวอย่าง" อยู่ในมือ model
-ที่อ่าน alert ซึ่งผู้โจมตีแต่งได้ = prompt injection ครั้งเดียวก็พาข้อมูลจริง
-เข้า context แล้วออกไปอยู่ในสรุปที่ Tier 1 อ่าน และถูกเก็บลง `ai_jobs`
-
-ขั้นตอนที่ตั้งใจให้เป็นคือ: **คนดึง catalog ครั้งเดียว → คนคัดว่าอะไรควรให้ model รู้
-→ เขียนลง data guide** model เห็นเฉพาะสิ่งที่คนเลือกใส่ ไม่ใช่ทั้ง estate
-
-ไม่มี token ก็เรียกไม่ได้ (`/health` เป็น path เดียวที่ไม่ต้อง auth):
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://soc-mcp-splunk:8200/catalog
-# 401
-```
+`/catalog` เป็น route สำหรับ operator เท่านั้น Backend ไม่เรียก และ connector ไม่มี MCP tool แล้ว
+(ทั้งชั้น MCP ถูกเอาออก) เหตุผลที่ไม่ปล่อยให้เครื่องเรียกเองยังใช้ได้: การ "สำรวจทุก index ทุก field
+พร้อมค่าตัวอย่าง" คือข้อมูลจริงจำนวนมาก คนเป็นผู้ดึงครั้งเดียว แล้วเขียน catalogue เอง
+สิ่งที่ Backend ใช้ค้นคือไฟล์ catalogue ที่คนเขียน ไม่ใช่ผลของ route นี้โดยตรง
 
 ---
 
@@ -273,6 +252,9 @@ sourcetype ก็ 200 search คุยกับ Splunk admin ก่อน หร
 
 ## แบ่ง query agent อัตโนมัติ
 
+> ⚠️ **ล้าสมัย** — query agent ที่ค้น Splunk ถูกเอาออกแล้ว (Backend ค้นผ่าน connector ตรงๆ) ส่วนนี้และ
+> `scripts/plan_query_agents.py` ที่เล่าถึง ใช้สร้าง agent ที่ไม่มีอะไรเรียกอีกแล้ว เก็บไว้เป็นประวัติ
+
 production มี sourcetype เป็นร้อย ใส่ prompt เดียวไม่ได้ — agent หนึ่งตัวที่ต้องรู้
 ทั้ง firewall, EDR, AD และ email จะยาวเกินและเลือกผิดบ่อย
 
@@ -436,9 +418,9 @@ index fortigate (sourcetype fortigate_traffic)
   devname = ชื่ออุปกรณ์ firewall
 ```
 
-**2. ตรวจ `field-map.json` แล้วใส่เป็น `SPLUNK_FIELD_MAP`**
+**2. ตรวจ `field-map.json` แล้วใส่ลง `roles` ใน catalogue**
 
-ตัวนี้ `related_events` ใช้ ซึ่ง model แก้ไม่ได้ — ต้องถูกตั้งแต่ config
+ตัวนี้ Backend ใช้เลือก field ที่จะค้น (`srcip` ไม่ใช่ `src_ip`) ต้องถูกตั้งแต่ catalogue
 
 **3. ตั้ง `SPLUNK_ALLOWED_INDEXES` จาก `indexes.json`**
 
@@ -448,12 +430,10 @@ index fortigate (sourcetype fortigate_traffic)
 
 ## ตรวจว่าใช้ได้จริง
 
-หลังตั้งค่าเสร็จ ยิง tool ตรงๆ ด้วย field ที่เพิ่งแมป ([TESTING.md](testing.md) ชั้น 2):
+หลังตั้งค่าเสร็จ ยิง route ตรงๆ ด้วย field ที่เพิ่งแมป ([testing.md](testing.md) ชั้น 2):
 
 ```bash
-mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-       "name":"search_events",
-       "arguments":{"index":"fortigate","filters":{"srcip":"10.1.100.11"},"max_count":3}}}'
+splunk /search '{"indicator":"10.1.100.11","indicator_type":"ip","fields":["srcip"],"index":"fortigate","max_count":3}'
 ```
 
-ได้ข้อมูลกลับมา = แมปถูก ได้ `count: 0` ทั้งที่รู้ว่ามีข้อมูล = ยังผิด
+ได้ข้อมูลกลับมา = แมปถูก ได้ `count: 0` ทั้งที่รู้ว่ามีข้อมูล = ยังผิด (ดู `fields_searched` กับ `spl` ในผล)

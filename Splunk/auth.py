@@ -1,4 +1,4 @@
-"""Bearer-token gate in front of the MCP transport."""
+"""Bearer-token gate in front of every route."""
 
 import logging
 import secrets

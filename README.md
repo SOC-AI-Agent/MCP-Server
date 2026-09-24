@@ -1,12 +1,13 @@
 # soc-mcp-server
 
-Tool servers for the AI agent, one per platform they front.
+One connector per external platform. The backend calls each over plain HTTP; ThreatQ
+and Confluence also publish MCP tools an agent can call.
 
-| Connector | Port | Fronts |
-| --- | --- | --- |
-| `Splunk/` | 8200 | Searching logs. Builds every search from structured parameters — the model never writes SPL. |
-| `Threatq/` | 8300 | Indicator reputation. |
-| `Confluence/` | 8600 | Which playbook covers an alert, and what it says. |
+| Connector | Port | Fronts | How it is called |
+| --- | --- | --- | --- |
+| `Splunk/` | 8200 | Searching logs. Builds every search from structured parameters — a caller never writes SPL. | HTTP routes only. **No MCP, no model** — the backend plans each search from the catalogue and this runs it. |
+| `Threatq/` | 8300 | Indicator reputation. | `POST /lookup` for the backend; the `lookup_indicator` tool for an agent (none uses it yet). |
+| `Confluence/` | 8600 | Which playbook covers an alert, and what it says. | `POST /match` for the backend; read-only tools for an agent. |
 
 ```bash
 cp .env.example .env     # platform credentials and one bearer token each
@@ -27,7 +28,7 @@ three.
 - `lookup-plans.json` — what to ask Splunk when an alert carries a given kind
   of indicator.
 
-`soc-backend` mounts this directory read-only. It is the one file dependency
+`soc-backend` mounts this directory read-only; the Splunk connector does not read it. It is the one file dependency
 between repos; the backend's compose points at `../MCP-Server/Splunk/catalog`
 by default and takes `MCP_CATALOG_PATH` to override it.
 
@@ -40,7 +41,7 @@ by default and takes `MCP_CATALOG_PATH` to override it.
 | `export_splunk_catalog.py` | Pulls indexes, sourcetypes and fields out of Splunk. |
 | `verify_catalog_export.py` | Says whether an export is complete enough to use — exit 0 or 1, so CI can branch on it. |
 | `make_catalog_template.py` | Turns that export into a catalogue skeleton, marking every guess. |
-| `plan_query_agents.py` | Groups sourcetypes into query agents. |
+| `plan_query_agents.py` | Groups sourcetypes into query agents. **Obsolete** — no agent searches Splunk any more. |
 
 The `export_catalog` job in `.gitlab-ci.yml` runs the first two. It is manual:
 it searches a production search head, and the catalogue changes when the

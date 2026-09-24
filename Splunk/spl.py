@@ -1,7 +1,7 @@
 """
 SPL construction, done here and never by the model.
 
-Tools take structured parameters; this module turns them into the one search
+Routes take structured parameters; this module turns them into the one search
 string that reaches Splunk. Nothing a caller supplies is interpolated raw, so a
 value carried in from an attacker-controlled log field cannot close the quote
 and append `| delete`.
@@ -9,9 +9,12 @@ and append `| delete`.
 
 import re
 
-from mcp.server.mcpserver.exceptions import ToolError
-
 from config import settings
+
+
+class QueryError(ValueError):
+    """A parameter this service will not put into a search. Routes answer it with a 400."""
+
 
 _FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,63}$")
 _INDEX_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-]{0,63}$")
@@ -30,21 +33,21 @@ def quote_value(value: str) -> str:
     if not isinstance(value, str):
         value = str(value)
     if len(value) > MAX_VALUE_LEN:
-        raise ToolError(f"value too long (max {MAX_VALUE_LEN} chars)")
+        raise QueryError(f"value too long (max {MAX_VALUE_LEN} chars)")
     if any(ch in value for ch in "\r\n\x00"):
-        raise ToolError("value may not contain newlines or null bytes")
+        raise QueryError("value may not contain newlines or null bytes")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def check_field(name: str) -> str:
     if not _FIELD_RE.match(name):
-        raise ToolError(f"invalid field name: {name!r}")
+        raise QueryError(f"invalid field name: {name!r}")
     return name
 
 
 def check_time(value: str, label: str) -> str:
     if not _TIME_RE.match(value):
-        raise ToolError(
+        raise QueryError(
             f"invalid {label}: {value!r} — use a relative modifier (-24h, -7d@d), "
             f"an ISO-8601 timestamp, an epoch, or 'now'"
         )
@@ -53,18 +56,18 @@ def check_time(value: str, label: str) -> str:
 
 def check_count(requested: int) -> int:
     if requested < 1:
-        raise ToolError("max_count must be >= 1")
+        raise QueryError("max_count must be >= 1")
     return min(requested, settings.SPLUNK_MAX_COUNT)
 
 
 def check_index(name: str) -> str:
     """Reject anything outside the configured allowlist."""
     if not _INDEX_RE.match(name):
-        raise ToolError(f"invalid index name: {name!r}")
+        raise QueryError(f"invalid index name: {name!r}")
     if settings.index_restriction_disabled:
         return name
     if name not in settings.allowed_indexes:
-        raise ToolError(
+        raise QueryError(
             f"index {name!r} is not allowed; permitted: {', '.join(settings.allowed_indexes)}"
         )
     return name
@@ -117,7 +120,7 @@ MAX_VALUES = 20
 
 def check_span(value: str) -> str:
     if not _SPAN_RE.match(value):
-        raise ToolError(
+        raise QueryError(
             f"invalid span: {value!r} — use a bucket size like 5m, 1h or 1d"
         )
     return value
@@ -133,17 +136,17 @@ def stats_clause(metrics: list[dict], group_by: list[str]) -> str:
     `dc(dstip)` is awkward to read and impossible to sort on by name.
     """
     if not metrics:
-        raise ToolError("at least one metric is required")
+        raise QueryError("at least one metric is required")
     if len(metrics) > MAX_METRICS:
-        raise ToolError(f"too many metrics (max {MAX_METRICS})")
+        raise QueryError(f"too many metrics (max {MAX_METRICS})")
     if len(group_by) > MAX_GROUP_BY:
-        raise ToolError(f"too many group_by fields (max {MAX_GROUP_BY})")
+        raise QueryError(f"too many group_by fields (max {MAX_GROUP_BY})")
 
     parts: list[str] = []
     for metric in metrics:
         name = (metric or {}).get("fn")
         if name not in STATS_FUNCTIONS:
-            raise ToolError(
+            raise QueryError(
                 f"unknown metric {name!r}; available: {', '.join(sorted(STATS_FUNCTIONS))}"
             )
         fn = STATS_FUNCTIONS[name]
@@ -152,7 +155,7 @@ def stats_clause(metrics: list[dict], group_by: list[str]) -> str:
             continue
         field = (metric or {}).get("field")
         if not field:
-            raise ToolError(f"metric {name!r} needs a field")
+            raise QueryError(f"metric {name!r} needs a field")
         check_field(field)
         column = f"{field}_{name}"
         if name == "values":
@@ -177,7 +180,7 @@ def sort_clause(sort: str | None, allowed: set[str]) -> str:
     descending = sort.startswith("-")
     column = sort[1:] if descending else sort
     if column not in allowed:
-        raise ToolError(
+        raise QueryError(
             f"cannot sort on {column!r}; the search produces: {', '.join(sorted(allowed))}"
         )
     return f"| sort {'-' if descending else ''}{check_field(column)} "

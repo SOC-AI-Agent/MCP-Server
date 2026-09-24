@@ -1,6 +1,6 @@
 # The MCP connectors, on their own.
 #
-# Three tool servers for the AI agent, one per platform they front. They hold
+# One connector per external platform (Splunk, ThreatQ, Confluence). They hold
 # no job state and share nothing but this file — each carries its own bearer
 # token, because one stolen token should not open all three.
 #
@@ -17,11 +17,6 @@ services:
     container_name: soc-mcp-splunk
     env_file: [.env]
     volumes:
-      # What the model is told about this Splunk: which index and sourcetype
-      # hold what, and which field carries which meaning. Read-only — a person
-      # edits it with the rest of the repo, and nothing in the container has
-      # any business rewriting it.
-      - ./Splunk/catalog:/catalog:ro
       # The company CA, when the platform's certificate is signed by one. See
       # SSL_CERT_FILE in .env.example.
       - ./certs:/certs:ro

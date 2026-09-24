@@ -1,25 +1,26 @@
 """
-MCP server exposing Splunk to the SOC agent (../../ai-service).
+Splunk, behind a small HTTP API for the backend.
 
-This is the *server* half: it publishes tools over MCP streamable HTTP. The
-client half lives in ai-service, which discovers these tools at runtime and
-never imports anything from this directory.
+Every route takes structured parameters and builds its own SPL — see spl.py for why
+a caller never gets to hand this service a search string. The backend plans the
+search (which index, which sourcetype, which fields carry the indicator) from the
+data catalogue, and this runs it: the same allowlist, the same field checks and the
+same quoting whoever is asking.
 
-Every tool takes structured parameters and builds its own SPL — see spl.py for
-why the model never gets to write a search string itself.
+There is no MCP layer and no model in this service. It used to publish the same
+searches as MCP tools for an agent to call; the backend now runs every planned search
+directly, so those tools, the transport and the curated catalogue file that described
+them for a model are gone. What is left is what the backend calls.
 """
 
 import json
 import logging
-from typing import Literal
 
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Route
 
-import catalog
 import spl
 from auth import BearerAuthMiddleware
 from config import settings, validate_startup
@@ -45,7 +46,17 @@ DROPPED_FIELDS = frozenset({
     "host", "source",
 })
 
-mcp = MCPServer(settings.MCP_SERVER_NAME)
+_routes: list[Route] = []
+
+
+def route(path: str, methods: list[str]):
+    """Register a handler. Collected here and handed to Starlette at the bottom."""
+
+    def register(handler):
+        _routes.append(Route(path, handler, methods=methods))
+        return handler
+
+    return register
 
 
 def _trim(event: dict) -> dict:
@@ -60,161 +71,11 @@ def _trim(event: dict) -> dict:
 
 
 async def _run(spl_query: str, earliest: str, latest: str, count: int) -> list[dict]:
-    try:
-        rows = await splunk.search(spl_query, earliest, latest, count)
-    except SplunkError as exc:
-        # ToolError, not a bare raise: the SDK puts its message in the tool
-        # result for the model to read, where an unexpected exception would be
-        # masked to "Error executing tool" and leave it guessing.
-        raise ToolError(str(exc)) from exc
+    # A SplunkError is left to propagate: the routes answer it with a 502, which
+    # says the platform is the problem. It used to be turned into a ToolError for
+    # a model to read, and a route then reported a Splunk outage as a 400.
+    rows = await splunk.search(spl_query, earliest, latest, count)
     return [_trim(r) for r in rows]
-
-
-@mcp.tool()
-async def list_indexes() -> dict:
-    """
-    What data this Splunk holds: the indexes you may search, what each one is
-    for, and which field carries which meaning.
-
-    ALWAYS call this first. Field names differ between sourcetypes, and a search
-    on the wrong field returns nothing — which reads exactly like "there is
-    nothing to find". `key_fields` maps a meaning to the field name to use: if
-    it says `src_ip: srcip`, then filter on `srcip`, not on `src_ip` or `host`.
-
-    Use `describe_sourcetype` when you need the full field list for one of them.
-    """
-    if catalog.loaded():
-        return {
-            "indexes": catalog.summary(),
-            "usage": "Filter with the field names in key_fields. A field not "
-                     "listed there may still exist — describe_sourcetype shows all of them.",
-        }
-
-    # No catalog: the names are all there is to offer, and nothing here knows
-    # what any field means. Say so rather than let the model assume CIM.
-    if settings.index_restriction_disabled:
-        rows = await _run("| eventcount summarize=false index=*", "-24h", "now", 100)
-        names = sorted({r["index"] for r in rows if r.get("index")})
-    else:
-        names = settings.allowed_indexes
-    return {
-        "indexes": names,
-        "warning": "No data catalog is configured, so field names are unknown. "
-                   "Look at an event with search_events before assuming a field name.",
-    }
-
-
-@mcp.tool()
-async def describe_sourcetype(sourcetype: str) -> dict:
-    """
-    The fields in one sourcetype, and what they mean.
-
-    Call this before filtering on a field you have not seen used, especially
-    when a search came back empty — an empty result usually means the field name
-    was wrong, not that the data is absent.
-
-    Args:
-        sourcetype: Name as it appears in list_indexes.
-    """
-    entry = catalog.sourcetype(sourcetype)
-    if entry is None:
-        known = [
-            st for index in catalog.indexes().values()
-            for st in (index.get("sourcetypes") or {})
-        ]
-        raise ToolError(
-            f"sourcetype {sourcetype!r} is not in the data catalog"
-            + (f"; known: {', '.join(known)}" if known else " (no catalog configured)")
-        )
-
-    return {
-        "index": entry["index"],
-        "sourcetype": entry["sourcetype"],
-        "purpose": entry.get("purpose", ""),
-        "key_fields": {r: f for r, f in (entry.get("roles") or {}).items() if r in catalog.ROLES},
-        "fields": entry.get("fields", []),
-        # The gotchas are the whole reason a person writes this file rather than
-        # a script generating it.
-        "notes": entry.get("notes", []),
-    }
-
-
-@mcp.tool()
-async def search_events(
-    index: str,
-    earliest: str = "-24h",
-    latest: str = "now",
-    sourcetype: str | None = None,
-    host: str | None = None,
-    filters: dict[str, str] | None = None,
-    max_count: int = 20,
-) -> dict:
-    """
-    Search raw events in one index over a time range.
-
-    Args:
-        index: Index to search. Must be one returned by list_indexes.
-        earliest: Start of the window, e.g. "-24h", "-7d@d", or an ISO timestamp.
-        latest: End of the window, e.g. "now".
-        sourcetype: Optional sourcetype to narrow to.
-        host: Optional hostname to narrow to.
-        filters: Optional extra field=value pairs, all of which must match.
-        max_count: Maximum events to return.
-    """
-    count = spl.check_count(max_count)
-    earliest = spl.check_time(earliest, "earliest")
-    latest = spl.check_time(latest, "latest")
-
-    terms = [spl.index_clause(index)]
-    scoped = {"sourcetype": sourcetype, "host": host, **(filters or {})}
-    equality = spl.equality_terms({k: v for k, v in scoped.items() if v is not None})
-    if equality:
-        terms.append(equality)
-
-    query = f"search {' '.join(terms)} | head {count}"
-    events = await _run(query, earliest, latest, count)
-    return {"count": len(events), "events": events, "spl": query}
-
-
-@mcp.tool()
-async def summarise_events(
-    index: str,
-    group_by: list[str],
-    metrics: list[dict],
-    earliest: str = "-24h",
-    latest: str = "now",
-    sourcetype: str | None = None,
-    filters: dict[str, str] | None = None,
-    span: str | None = None,
-    sort: str | None = None,
-    max_rows: int = 50,
-) -> dict:
-    """
-    Count and group events instead of listing them.
-
-    Use this when the question is about shape rather than instances — how many
-    distinct destinations a host reached, how often something happened per
-    hour, how many were blocked against allowed. Listing twenty raw events
-    answers none of those: a host that contacted five hundred addresses and one
-    that contacted one both return twenty lines.
-
-    Args:
-        index: Index to search.
-        group_by: Fields to group by, e.g. ["dstip"] or ["action"].
-        metrics: What to compute, e.g. [{"fn": "count"},
-            {"fn": "distinct_count", "field": "dstport"}].
-            fn is one of: count, distinct_count, sum, avg, min, max, values.
-        earliest: Start of the window.
-        latest: End of the window.
-        sourcetype: Optional sourcetype to narrow to.
-        filters: Optional field=value pairs, all of which must match.
-        span: Bucket results by time, e.g. "5m", "1h". Adds _time to the groups.
-        sort: Column to sort by, "-" first for descending, e.g. "-count".
-        max_rows: Maximum rows to return.
-    """
-    return await _summarise(
-        index, group_by, metrics, earliest, latest, sourcetype, filters, span, sort, max_rows
-    )
 
 
 async def _summarise(
@@ -229,7 +90,7 @@ async def _summarise(
     sort: str | None,
     max_rows: int,
 ) -> dict:
-    """Shared by the tool and the /summarise route, so the two cannot drift."""
+    """What the /summarise route runs."""
     count = spl.check_count(max_rows)
     earliest = spl.check_time(earliest, "earliest")
     latest = spl.check_time(latest, "latest")
@@ -273,25 +134,6 @@ async def _summarise(
     }
 
 
-@mcp.tool()
-async def alert_frequency(alert_name: str, days: int = 7) -> dict:
-    """
-    Count how often an alert or correlation search has fired recently.
-
-    Use this to judge whether an alert is routine noise or unusual. A high,
-    steady daily count suggests a known false-positive pattern; a first-ever
-    occurrence deserves closer reading.
-
-    Args:
-        alert_name: Alert / correlation-search name exactly as Splunk stores it.
-        days: How many days back to count over (1-90).
-    """
-    if not 1 <= days <= 90:
-        raise ToolError("days must be between 1 and 90")
-
-    return await _alert_frequency(alert_name, days)
-
-
 async def _alert_frequency(
     alert_name: str,
     days: int,
@@ -299,13 +141,15 @@ async def _alert_frequency(
     latest: str | None = None,
 ) -> dict:
     """
-    Shared by the tool and the /frequency route, so the two cannot drift.
+    What the /frequency route runs.
 
     `earliest`/`latest` override the relative window. The caller usually has
     them: a window read as `-7d` at execution time drifts away from the alert
     exactly as `-24h` did, just more slowly, and "has not fired in 7 days" is
     the kind of wrong answer that reads as reassurance.
     """
+    if not 1 <= days <= 90:
+        raise spl.QueryError("days must be between 1 and 90")
     name_field = spl.check_field(settings.SPLUNK_ALERT_NAME_FIELD)
     query = (
         f"search {spl.index_clause(settings.SPLUNK_ALERT_INDEX)} "
@@ -331,42 +175,6 @@ async def _alert_frequency(
     }
 
 
-@mcp.tool()
-async def related_events(
-    indicator: str,
-    indicator_type: Literal["ip", "host", "user", "hash", "domain"],
-    earliest: str = "-24h",
-    latest: str = "now",
-    max_count: int = 20,
-) -> dict:
-    """
-    Find events across all allowed indexes mentioning one indicator.
-
-    Use this to pull context around an entity named in an alert — what else the
-    source IP touched, what else the user did, where a hash appeared.
-
-    Args:
-        indicator: The value to look for, e.g. "10.1.2.3" or "jdoe".
-        indicator_type: Which kind of entity `indicator` is.
-        earliest: Start of the window, e.g. "-24h".
-        latest: End of the window, e.g. "now".
-        max_count: Maximum events to return.
-    """
-    # Field names come from the data catalog, not from a guess. The CIM names
-    # this used to hardcode (src_ip, dest_ip) do not exist in raw vendor logs,
-    # so the search matched nothing and the answer read as "no related activity"
-    # — a wrong answer with no error to notice.
-    fields = catalog.fields_for_indicator(indicator_type)
-    if not fields:
-        raise ToolError(
-            f"no field is mapped to indicator_type={indicator_type!r}. "
-            "Add it to the data catalog (SPLUNK_CATALOG_FILE)."
-        )
-    return await _indicator_search(
-        indicator, indicator_type, fields, earliest, latest, max_count
-    )
-
-
 async def _indicator_search(
     indicator: str,
     indicator_type: str,
@@ -378,12 +186,9 @@ async def _indicator_search(
     sourcetype: str | None = None,
 ) -> dict:
     """
-    One indicator across the fields that carry it.
-
-    Shared by the tool above and the /search route below, so the two cannot
-    drift: the same validation, the same SPL construction, the same shape back.
-    Only the caller differs — a model choosing for itself, or the backend
-    running a plan it already worked out.
+    One indicator across the fields that carry it — what the /search route runs.
+    The backend has already worked out which fields, and which index and
+    sourcetype; this validates them, builds the SPL and returns the events.
     """
     count = spl.check_count(max_count)
     earliest = spl.check_time(earliest, "earliest")
@@ -428,12 +233,9 @@ async def _indicator_search(
 # ── Catalog ─────────────────────────────────────────────────────────────────
 # What indexes, sourcetypes and fields this token can actually see.
 #
-# Deliberately a custom route and NOT a tool. A tool would put "enumerate every
-# field in every index, with example values" in the hands of a model that reads
-# attacker-influenced alert text — one injected instruction away from paging
-# real data into a summary an analyst reads. Routes do not appear in tools/list,
-# so the agent cannot reach this at all; an operator pulls the catalog once and
-# whatever should reach the model gets written into its prompt by a person.
+# An operator pulls this once and a person writes the data catalogue from it
+# (docs/splunk-catalog.md); the backend then plans its searches from that file.
+# Example values are real data, which is why they are behind a flag.
 #
 #   GET /catalog                          field names and cardinality
 #   GET /catalog?values=true              also example values — real data
@@ -462,7 +264,7 @@ def _int_param(request: Request, name: str, default: int, ceiling: int) -> int:
         return default
 
 
-@mcp.custom_route("/catalog", methods=["GET"])
+@route("/catalog", methods=["GET"])
 # Named for what it is rather than for its path: `catalog` is the module that
 # holds the curated file, and a route function of the same name shadows it.
 async def catalog_route(request: Request) -> JSONResponse:
@@ -479,7 +281,7 @@ async def catalog_route(request: Request) -> JSONResponse:
 
     try:
         scope = spl.index_clause(only_index) if only_index else spl.index_clause(None)
-    except ToolError as exc:
+    except spl.QueryError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
     result: dict = {
@@ -559,19 +361,17 @@ async def catalog_route(request: Request) -> JSONResponse:
 # ── Planned search ──────────────────────────────────────────────────────────
 # The backend already knows what it wants: which indicator, which kind, which
 # fields carry it here, which index and sourcetype. Handing that to a model so
-# it can write the same parameters back out cost 488 seconds per lookup on
-# CPU-only inference, of which Splunk used 0.4. This route is the same search
-# without the transcription.
+# it could write the same parameters back out cost 488 seconds per lookup on
+# CPU-only inference, of which Splunk used 0.4 — which is why no model is asked.
 #
-# A route rather than a tool, for the reason /catalog is: the caller is the
-# backend executing a plan a person can read beforehand, not a model choosing.
-# The agent keeps related_events for the cases nobody planned for.
+# The caller is the backend executing a plan a person can read beforehand, not a
+# model choosing.
 #
 # Behind the same bearer middleware as everything except /health. Every value
 # still goes through spl.py — the index allowlist, the field-name check and the
 # quoting are not skipped because the caller is trusted.
 
-@mcp.custom_route("/search", methods=["POST"])
+@route("/search", methods=["POST"])
 async def search_route(request: Request) -> JSONResponse:
     try:
         body = await request.json()
@@ -608,8 +408,10 @@ async def search_route(request: Request) -> JSONResponse:
             body.get("index"),
             body.get("sourcetype"),
         )
-    except ToolError as exc:
+    except spl.QueryError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except SplunkError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
     except Exception as exc:  # noqa: BLE001 — the caller needs the reason, not a 500
         logger.exception("planned search failed")
         return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=502)
@@ -617,13 +419,14 @@ async def search_route(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
-@mcp.custom_route("/summarise", methods=["POST"])
+@route("/summarise", methods=["POST"])
 async def summarise_route(request: Request) -> JSONResponse:
     """
-    The planned form of summarise_events.
-
-    Same reason /search exists: when the caller already knows what it wants
-    grouped and counted, a model in the middle only retypes it.
+    Group and count instead of listing: how many distinct destinations a host
+    reached, how often something happened per hour, how many were blocked against
+    allowed. Listing twenty raw events answers none of those — a host that
+    contacted five hundred addresses and one that contacted one both return
+    twenty lines.
     """
     try:
         body = await request.json()
@@ -652,8 +455,10 @@ async def summarise_route(request: Request) -> JSONResponse:
             body.get("sort"),
             int(body.get("max_rows") or 50),
         )
-    except ToolError as exc:
+    except spl.QueryError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except SplunkError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
     except Exception as exc:  # noqa: BLE001
         logger.exception("planned summary failed")
         return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=502)
@@ -661,14 +466,14 @@ async def summarise_route(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
-@mcp.custom_route("/frequency", methods=["POST"])
+@route("/frequency", methods=["POST"])
 async def frequency_route(request: Request) -> JSONResponse:
     """
-    How often one alert has fired — planned, so no model is needed to ask.
+    How often one alert has fired.
 
     The backend has the alert name and the window from the moment the alert
-    arrived. Sending those to an agent so it can call alert_frequency with them
-    took 109 seconds of the 111 a whole lookup now costs.
+    arrived. Handing those to an agent so it could ask the same question back
+    took 109 seconds of the 111 a whole lookup cost.
     """
     try:
         body = await request.json()
@@ -691,14 +496,16 @@ async def frequency_route(request: Request) -> JSONResponse:
                 alert_name, days, body.get("earliest"), body.get("latest")
             )
         )
-    except ToolError as exc:
+    except spl.QueryError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except SplunkError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
     except Exception as exc:  # noqa: BLE001
         logger.exception("planned frequency check failed")
         return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=502)
 
 
-@mcp.custom_route("/check-connection", methods=["GET"])
+@route("/check-connection", methods=["GET"])
 async def check_connection_route(_: Request) -> JSONResponse:
     """
     Whether this connector can reach and use Splunk, and where it stops if not.
@@ -714,7 +521,7 @@ async def check_connection_route(_: Request) -> JSONResponse:
     return JSONResponse(result, status_code=200 if result["connected"] else 502)
 
 
-@mcp.custom_route("/health", methods=["GET"])
+@route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     return JSONResponse(
         {"status": "ok", "server": settings.MCP_SERVER_NAME, "splunk": await splunk.reachable()}
@@ -722,14 +529,9 @@ async def health(_: Request) -> JSONResponse:
 
 
 validate_startup()
-catalog.load()
 
-app = mcp.streamable_http_app(
-    # No per-client session state to keep, so any replica can serve any request
-    # — that is what lets this connector scale on its own.
-    stateless_http=True,
-    transport_security=TransportSecuritySettings(allowed_hosts=settings.allowed_hosts),
-)
+# No per-client session state, so any replica can serve any request.
+app = Starlette(routes=_routes)
 app.add_middleware(BearerAuthMiddleware, token=settings.MCP_AUTH_TOKEN)
 
 logger.info(

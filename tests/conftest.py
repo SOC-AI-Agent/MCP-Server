@@ -39,7 +39,6 @@ ENV = {
         "SPLUNK_TOKEN": SECRETS["Splunk"],
         "SPLUNK_ALLOWED_INDEXES": "main",
         "SPLUNK_BASE_URL": CLOSED,
-        "SPLUNK_CATALOG_FILE": "",
     },
     "Threatq": {
         "THREATQ_MCP_AUTH_TOKEN": TOKEN,

@@ -1,2 +1,2 @@
--r ../Splunk/requirements.txt
+-r ../Threatq/requirements.txt
 pytest>=8

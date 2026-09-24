@@ -1,15 +1,15 @@
 {
   "_comment": [
-    "What the model is told about this Splunk. Written by a person, not generated.",
+    "What the backend, and the agent that reads its results, are told about this Splunk. Written by a person, not generated.",
     "",
     "Start from GET /catalog on soc-mcp-splunk, which enumerates what is really",
     "there. Then add the part enumeration cannot know: what each sourcetype is",
     "for, which field carries which meaning, and what is easy to get wrong.",
     "",
     "'roles' is the important part — it maps a meaning to this sourcetype's",
-    "field name. related_events searches on it, and the model is shown it so a",
-    "filter gets built on 'srcip' rather than on a CIM name that does not exist",
-    "here. Roles: src_ip dest_ip src_port dest_port user host hash domain action",
+    "field name. The backend searches on it, so a filter gets built on 'srcip'",
+    "rather than on a CIM name that does not exist here.",
+    "Roles: src_ip dest_ip src_port dest_port user host hash domain action",
     "",
     "Keep it short. It is read on every run that touches Splunk, and every token",
     "here is one taken away from the alert."

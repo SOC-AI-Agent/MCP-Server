@@ -24,7 +24,7 @@ gitignored.
 | [`export_splunk_catalog.py`](export_splunk_catalog.py) | Pulls indexes, sourcetypes and fields out of Splunk into JSON and a Markdown summary. |
 | [`verify_catalog_export.py`](verify_catalog_export.py) | Says whether an export is complete enough to use. Exit 0 or 1, so CI can branch on it. |
 | [`make_catalog_template.py`](make_catalog_template.py) | Turns that export into a catalogue skeleton, guessing the role map and marking every guess for review. |
-| [`plan_query_agents.py`](plan_query_agents.py) | Groups sourcetypes into query agents — by a domain table, by your own table, by index, or by what the data shares. |
+| [`plan_query_agents.py`](plan_query_agents.py) | **Obsolete** — no agent searches Splunk any more. Groups sourcetypes into query agents — by a domain table, by your own table, by index, or by what the data shares. |
 
 The Splunk export is a Python script; the rest read its output.
 
