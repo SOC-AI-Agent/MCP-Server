@@ -76,7 +76,6 @@ export_catalog:
   rules:
     - if: '$CI_COMMIT_BRANCH'
   script:
-    - apt-get update -qq && apt-get install -y -qq curl >/dev/null
     - |
       set -eu
       : "${SPLUNK_URL:?set SPLUNK_URL, e.g. https://splunk.internal:8089}"
@@ -97,7 +96,7 @@ export_catalog:
       SPLUNK_AUTH="Bearer $SPLUNK_TOKEN" \
       SPLUNK_INSECURE="${SPLUNK_INSECURE:-0}" \
       OUT="$CI_PROJECT_DIR/catalog-staging" \
-        bash scripts/export_splunk_catalog.sh
+        python3 scripts/export_splunk_catalog.py
 
       # The same check, again. One definition of "usable" for both questions —
       # the day two separate checks disagree is the day a half-written

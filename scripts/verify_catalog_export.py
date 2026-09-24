@@ -12,7 +12,7 @@ if sys.version_info < (3, 12):
 """
 Decide whether a Splunk catalog export is complete enough to use.
 
-    python3 scripts/verify_catalog_export.py mcp-server/Splunk/table
+    python3 scripts/verify_catalog_export.py Splunk/table
 
 Exit 0 means usable, 1 means not. There is one definition of "usable" and both
 callers share it: CI asks this before exporting (is there already one?) and

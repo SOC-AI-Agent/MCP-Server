@@ -88,7 +88,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://soc-mcp-splunk:8200/catalog
 export SPLUNK_URL='https://splunk.example.com:8089'   # management port ไม่ใช่ web 8000
 export SPLUNK_AUTH='Bearer eyJ…'                      # หรือ 'user:password'
 
-./scripts/export_splunk_catalog.sh
+python3 scripts/export_splunk_catalog.py
 ```
 
 ปรับได้:
@@ -109,7 +109,7 @@ cert ตรวจไม่ผ่าน (60), ต่อไม่ติด (7), ti
 ## รันอัตโนมัติด้วย GitHub Actions
 
 `export_catalog` ใน [`.gitlab-ci.yml`](../.gitlab-ci.yml)
-ดึง export มาเก็บที่ `mcp-server/Splunk/table/` **เฉพาะตอนที่ยังไม่มี**
+ดึง export มาเก็บที่ `Splunk/table/` **เฉพาะตอนที่ยังไม่มี**
 ถ้ามีครบแล้วจะข้าม ใช้เวลาไม่กี่วินาที
 
 ### "มีแล้ว" แปลว่าอะไร
@@ -214,7 +214,7 @@ CIM data models: **none** — fields are not normalised
 
 **ถ้ามี data model นอกเหนือจาก `internal_*`** แปลว่า normalize แล้ว — `src`, `dest`,
 `user` มีความหมายมาตรฐาน field map ที่ hardcode ไว้ใน
-[`mcp-server/Splunk/server.py`](../mcp-server/Splunk/server.py) ก็จะถูกต้องอยู่แล้ว
+[`Splunk/server.py`](../Splunk/server.py) ก็จะถูกต้องอยู่แล้ว
 งานที่เหลือน้อยลงมาก
 
 **ถ้าไม่มี** ต้องแมปเองทุก sourcetype
@@ -255,7 +255,7 @@ FortiGate `type=utm` (virus, IPS) มี field ที่ `type=traffic` ไม�
 
 แก้: เพิ่ม `SAMPLE` หรือสุ่มให้กระจาย
 ```bash
-SAMPLE=2000 ./scripts/export_splunk_catalog.sh
+SAMPLE=2000 python3 scripts/export_splunk_catalog.py
 ```
 
 **ช่วงเวลามีผล** — `WINDOW=-30d` ไม่เห็น sourcetype ที่หยุดส่งไปแล้ว หรือที่เพิ่งเริ่ม
@@ -286,7 +286,7 @@ curl -s "$MCP/catalog" -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
 ยังไม่มี export จริงก็ลองได้เลย — มีตัวอย่างรูปแบบ production ให้:
 
 ```bash
-python3 scripts/plan_query_agents.py mcp-server/Splunk/catalog/catalog-export.example.json -o build/
+python3 scripts/plan_query_agents.py Splunk/catalog/catalog-export.example.json -o build/
 ```
 
 ```

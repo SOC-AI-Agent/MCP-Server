@@ -37,7 +37,7 @@ by default and takes `MCP_CATALOG_PATH` to override it.
 
 | | |
 | --- | --- |
-| `export_splunk_catalog.sh` | Pulls indexes, sourcetypes and fields out of Splunk. |
+| `export_splunk_catalog.py` | Pulls indexes, sourcetypes and fields out of Splunk. |
 | `verify_catalog_export.py` | Says whether an export is complete enough to use — exit 0 or 1, so CI can branch on it. |
 | `make_catalog_template.py` | Turns that export into a catalogue skeleton, marking every guess. |
 | `plan_query_agents.py` | Groups sourcetypes into query agents. |

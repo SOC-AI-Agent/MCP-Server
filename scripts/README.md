@@ -21,24 +21,27 @@ gitignored.
 
 | Script | Does |
 | --- | --- |
-| [`export_splunk_catalog.sh`](export_splunk_catalog.sh) | Pulls indexes, sourcetypes and fields out of Splunk into JSON and a Markdown summary. |
+| [`export_splunk_catalog.py`](export_splunk_catalog.py) | Pulls indexes, sourcetypes and fields out of Splunk into JSON and a Markdown summary. |
 | [`verify_catalog_export.py`](verify_catalog_export.py) | Says whether an export is complete enough to use. Exit 0 or 1, so CI can branch on it. |
 | [`make_catalog_template.py`](make_catalog_template.py) | Turns that export into a catalogue skeleton, guessing the role map and marking every guess for review. |
 | [`plan_query_agents.py`](plan_query_agents.py) | Groups sourcetypes into query agents — by a domain table, by your own table, by index, or by what the data shares. |
-| [`derive_signatures.py`](derive_signatures.py) | Works out which fields identify a log family, from alerts that could not be placed. |
-| [`run_samples.py`](run_samples.py) | Puts the sample alerts through an agent and prints the trace. |
-| [`run_mockup.py`](run_mockup.py) | Same for the recovered ES notables. `--dry` shows what would be read off each without running a model. |
 
-The Splunk export is a shell script because it is curl in a loop; the rest read
-its output.
+The Splunk export is a Python script; the rest read its output.
+
+Related scripts in the other repos:
+
+- `derive_signatures.py` — **Backend** repo, `scripts/`. Suggests field
+  signatures for unplaced alerts; low-sample candidates are review-only by default.
+- `run_mockup.py` — **LLM-Server** repo, `scripts/`. Puts recovered ES
+  notables through an agent and prints the trace.
 
 ### Exporting
 
 ```bash
 SPLUNK_URL=https://splunk.example.com:8089 \
 SPLUNK_AUTH='Bearer eyJ…' \
-OUT=mcp-server/Splunk/table \
-  ./scripts/export_splunk_catalog.sh
+OUT=Splunk/table \
+  python3 scripts/export_splunk_catalog.py
 ```
 
 `SPLUNK_INSECURE=1` (the default) skips certificate verification, which is what
@@ -53,7 +56,7 @@ wrote said this estate has no indexes at all.
 ### Checking an export
 
 ```bash
-python3 scripts/verify_catalog_export.py mcp-server/Splunk/table
+python3 scripts/verify_catalog_export.py Splunk/table
 ```
 
 The question is not whether the directory exists. An export that died after
@@ -69,12 +72,12 @@ to decide whether to commit. One definition, so the two can never disagree.
 ## Where they fit
 
 ```
-Splunk ──export_splunk_catalog.sh──► make_catalog_template.py ──► catalog/*.json
-            │                  (mcp-server/Splunk/table/)
+Splunk ──export_splunk_catalog.py──► make_catalog_template.py ──► catalog/*.json
+            │                  (Splunk/table/)
                                                 │
                                                 └──► plan_query_agents.py ──► agents/*.json
 
-alerts that could not be placed ──► derive_signatures.py ──► ALERT_SOURCE_SIGNATURES
+alerts that could not be placed ──► derive_signatures.py (Backend) ──► ALERT_SOURCE_SIGNATURES
 ```
 
 Each one stops where a person has to decide something — what a sourcetype is
