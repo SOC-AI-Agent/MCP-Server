@@ -27,7 +27,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         # compare_digest keeps the check constant-time; a plain == leaks the
         # token one character at a time to anything that can measure latency.
-        if scheme.lower() != "bearer" or not secrets.compare_digest(presented, self._token):
+        # Compared as bytes: given a str with a non-ASCII character it raises
+        # TypeError, which an unauthenticated caller could use to get a 500.
+        if scheme.lower() != "bearer" or not secrets.compare_digest(
+            presented.encode(), self._token.encode()
+        ):
             logger.warning("rejected unauthenticated request from %s", request.client)
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
 

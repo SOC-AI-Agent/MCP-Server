@@ -131,6 +131,8 @@ async def match_route(request: Request) -> JSONResponse:
         body = await request.json()
     except ValueError:
         return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
     alert_name = (body.get("alert_name") or "").strip()
     if not alert_name:
@@ -169,6 +171,22 @@ async def match_route(request: Request) -> JSONResponse:
 @mcp.custom_route("/sync", methods=["POST"])
 async def sync_route(_: Request) -> JSONResponse:
     return JSONResponse(await sync())
+
+
+@mcp.custom_route("/check-connection", methods=["GET"])
+async def check_connection_route(_: Request) -> JSONResponse:
+    """
+    Whether this connector can reach and read Confluence, and where it stops if not.
+
+    Behind the bearer token, unlike /health: each call goes out to Confluence
+    with the service account, and an open route would let anyone who can reach
+    this port make it do that. 200 when connected, 502 when Confluence is the
+    problem.
+
+        GET /check-connection
+    """
+    result = await confluence_api.check()
+    return JSONResponse(result, status_code=200 if result["connected"] else 502)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -223,11 +241,14 @@ async def list_playbooks() -> dict:
     }
 
 
+# Refused at boot, like the other two connectors. This used to log a warning and
+# carry on, which for an unset CONFLUENCE_MCP_AUTH_TOKEN meant a bearer gate whose
+# token was empty — and an empty "Authorization: Bearer " header matches it.
+if missing := missing_settings():
+    raise RuntimeError("refusing to start, unset required env: " + ", ".join(missing))
+
 app = mcp.streamable_http_app(stateless_http=True)
 app.add_middleware(BearerAuthMiddleware, token=settings.CONFLUENCE_MCP_AUTH_TOKEN)
-
-for name in missing_settings():
-    logger.warning("%s is not set — the connector will refuse every request", name)
 
 logger.info(
     "%s ready on :%d (confluence=%s)",

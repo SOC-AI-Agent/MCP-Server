@@ -52,8 +52,14 @@ class ThreatQAuth:
 
     async def _mint(self) -> None:
         try:
+            # ThreatQ's REST reference (v5.12) shows the token request as
+            # POST /api/token?grant_type=password&client_id=… with the email and
+            # password in the body. It does not show how that body is encoded, so
+            # the four fields also stay in the form body: whichever of the two
+            # places the server reads, they are there.
             resp = await self._client.post(
                 settings.THREATQ_TOKEN_PATH,
+                params={"grant_type": "password", "client_id": settings.THREATQ_CLIENT_ID},
                 data={
                     "grant_type": "password",
                     "client_id": settings.THREATQ_CLIENT_ID,
@@ -114,6 +120,113 @@ class ThreatQAuth:
 
 
 threatq_auth = ThreatQAuth()
+
+# A connection check that hangs for THREATQ_TIMEOUT on a host that silently
+# drops packets is not answering the question it was asked.
+CHECK_TIMEOUT_SECONDS = 10
+# What the check searches for. Nothing has this value, so a healthy answer is an
+# empty one — the point is to prove the account may run the search, not to find
+# anything.
+CHECK_SEARCH_VALUE = "soc-mcp-connection-check.invalid"
+
+
+async def threatq_check() -> dict:
+    """
+    Can this connector use ThreatQ right now? Never raises.
+
+    Three steps, in order, so a failure says where it stopped:
+
+        reach  the host answers at all (DNS, routing, TLS)
+        auth   the credentials are accepted — a fresh token is minted, not the
+               cached one, so this tests the credentials and not the cache
+        read   an authenticated read of the indicator collection succeeds
+        search the account may run the indicator search a lookup uses — ThreatQ
+               permissions are per endpoint, so a role can read the collection
+               and still be refused the search
+
+    Reads one row, then searches for a value nothing has, and discards both;
+    nothing is written and nothing from the platform is returned.
+    """
+    started = time.monotonic()
+
+    def outcome(failed_at: str | None = None, error: str | None = None) -> dict:
+        result: dict[str, Any] = {
+            "connected": failed_at is None,
+            "base_url": settings.THREATQ_BASE_URL,
+            "auth_mode": settings.THREATQ_AUTH_MODE,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+        }
+        if failed_at:
+            result["failed_at"] = failed_at
+            result["error"] = error
+        return result
+
+    async with httpx.AsyncClient(
+        base_url=settings.THREATQ_BASE_URL.rstrip("/"),
+        verify=settings.THREATQ_VERIFY_SSL,
+        timeout=min(settings.THREATQ_TIMEOUT, CHECK_TIMEOUT_SECONDS),
+    ) as client:
+        try:
+            await client.get("/")  # any HTTP answer means the host is there
+        except httpx.HTTPError as exc:
+            return outcome("reach", f"cannot reach ThreatQ at {settings.THREATQ_BASE_URL}: "
+                                    f"{type(exc).__name__}: {exc}")
+
+        try:
+            headers = await threatq_auth.auth_header(force_refresh=True)
+        except ThreatQError as exc:
+            return outcome("auth", str(exc))
+
+        try:
+            resp = await client.get(
+                settings.THREATQ_CHECK_PATH, params={"limit": 1}, headers=headers
+            )
+        except httpx.HTTPError as exc:
+            return outcome("read", f"{type(exc).__name__} reading "
+                                   f"{settings.THREATQ_CHECK_PATH}: {exc}")
+
+        # Only 2xx counts. A redirect to a login page is not an API answer, and
+        # accepting anything under 400 would report it as connected.
+        if resp.status_code == 401:
+            return outcome("auth", "ThreatQ rejected the token (401)")
+        if resp.status_code == 403:
+            return outcome("read", "ThreatQ refused the read (403) — the account needs "
+                                   "read access to indicators")
+        if not 200 <= resp.status_code < 300:
+            return outcome("read", f"ThreatQ returned {resp.status_code} for "
+                                   f"GET {settings.THREATQ_CHECK_PATH}")
+
+        # The same call a lookup makes, so passing here predicts a lookup passing.
+        try:
+            found = await client.post(
+                settings.THREATQ_SEARCH_PATH,
+                params={"with": settings.THREATQ_SEARCH_WITH, "limit": 1},
+                json={"criteria": {"value": CHECK_SEARCH_VALUE}},
+                headers=headers,
+            )
+        except httpx.HTTPError as exc:
+            return outcome("search", f"{type(exc).__name__} searching "
+                                     f"{settings.THREATQ_SEARCH_PATH}: {exc}")
+
+    if found.status_code == 401:
+        return outcome("auth", "ThreatQ rejected the token (401)")
+    if found.status_code == 403:
+        return outcome("search", "ThreatQ refused the search (403) — the account needs read "
+                                 "access to indicators_search as well as indicators")
+    if 200 <= found.status_code < 300:
+        return outcome()
+    # ThreatQ documents 404 as "Object not found", which is how a search with no
+    # hit can come back. A 404 that carries a JSON body is that. One that does not
+    # is a web server saying the path is not there.
+    if found.status_code == 404:
+        try:
+            found.json()
+        except ValueError:
+            return outcome("search", f"POST {settings.THREATQ_SEARCH_PATH} returned 404 with no "
+                                     "API body — is THREATQ_SEARCH_PATH right for this deployment?")
+        return outcome()
+    return outcome("search", f"ThreatQ returned {found.status_code} for "
+                             f"POST {settings.THREATQ_SEARCH_PATH}")
 
 
 # Looking up by value is POST /api/indicators/search, not a GET on the

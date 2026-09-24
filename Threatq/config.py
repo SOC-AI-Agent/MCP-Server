@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # are ABSENT unless asked for by name. Without this the reply parses fine and
     # every indicator looks unscored, which is the worst kind of wrong.
     THREATQ_SEARCH_WITH: str = "score,sources,adversaries,status,type,attributes"
+    # What /check-connection reads to prove the credentials work: one row from
+    # the indicator collection, which is also what a lookup needs to be allowed
+    # to do. Not verified against a live instance from this repo.
+    THREATQ_CHECK_PATH: str = "/api/indicators"
     THREATQ_VERIFY_SSL: bool = True
     THREATQ_TIMEOUT: int = 60
 

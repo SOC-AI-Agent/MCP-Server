@@ -3,20 +3,7 @@ soc-mcp-threatq — indicator reputation, two ways in.
 
     POST /lookup            many indicators at once, for the core backend
     tool lookup_indicator   one indicator, for an agent mid-analysis
-
-The split is the point. The backend checks every external indicator in an alert
-before any model runs: that is exact work with one right answer, so there is
-nothing to decide and deciding would only be a chance to skip it. It calls the
-route, over plain HTTP, with no MCP session to hold.
-
-The tool covers what the backend cannot know in advance. An agent searching
-Splunk turns up addresses that were not in the original alert, and those have
-never been checked. One tool, one indicator at a time — not an interface for
-enumerating the platform.
-
-Nothing here writes to ThreatQ. Its operations can add indicators, change
-status and fire actions, and the alert text steering the model is
-attacker-influenced; a read-only account is the second layer under that.
+    GET  /check-connection  can this connector reach and use ThreatQ right now
 """
 
 import logging
@@ -29,7 +16,7 @@ from starlette.responses import JSONResponse
 
 from auth import BearerAuthMiddleware
 from config import settings, validate_startup
-from threatq_api import ThreatQError, threatq_auth, threatq_lookup
+from threatq_api import ThreatQError, threatq_auth, threatq_check, threatq_lookup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +82,8 @@ async def lookup_route(request: Request) -> JSONResponse:
         body = await request.json()
     except ValueError:
         return JSONResponse({"detail": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"detail": "body must be a JSON object"}, status_code=400)
 
     raw = body.get("indicators")
     if not isinstance(raw, list) or not raw:
@@ -125,6 +114,12 @@ async def lookup_route(request: Request) -> JSONResponse:
             records.append({**item, "found": False, "error": str(exc)})
 
     return JSONResponse({"records": records, "checked": len(wanted)})
+
+
+@mcp.custom_route("/check-connection", methods=["GET"])
+async def check_connection_route(_: Request) -> JSONResponse:
+    result = await threatq_check()
+    return JSONResponse(result, status_code=200 if result["connected"] else 502)
 
 
 @mcp.custom_route("/health", methods=["GET"])

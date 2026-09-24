@@ -577,6 +577,8 @@ async def search_route(request: Request) -> JSONResponse:
         body = await request.json()
     except ValueError:
         return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
     indicator = (body.get("indicator") or "").strip()
     indicator_type = (body.get("indicator_type") or "").strip()
@@ -627,6 +629,8 @@ async def summarise_route(request: Request) -> JSONResponse:
         body = await request.json()
     except ValueError:
         return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
     index = (body.get("index") or "").strip()
     if not index:
@@ -670,6 +674,8 @@ async def frequency_route(request: Request) -> JSONResponse:
         body = await request.json()
     except ValueError:
         return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
     alert_name = (body.get("alert_name") or "").strip()
     if not alert_name:
@@ -690,6 +696,22 @@ async def frequency_route(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         logger.exception("planned frequency check failed")
         return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=502)
+
+
+@mcp.custom_route("/check-connection", methods=["GET"])
+async def check_connection_route(_: Request) -> JSONResponse:
+    """
+    Whether this connector can reach and use Splunk, and where it stops if not.
+
+    Behind the bearer token, unlike /health: each call goes out to Splunk with
+    the service token and runs a search, and an open route would let anyone who
+    can reach this port make it do that. 200 when connected, 502 when Splunk is
+    the problem.
+
+        GET /check-connection
+    """
+    result = await splunk.check()
+    return JSONResponse(result, status_code=200 if result["connected"] else 502)
 
 
 @mcp.custom_route("/health", methods=["GET"])
