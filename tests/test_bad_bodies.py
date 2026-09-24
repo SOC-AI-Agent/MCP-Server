@@ -9,9 +9,7 @@ import pytest
 from conftest import AUTH
 
 ROUTES = [
-    ("Splunk", "/search"),
-    ("Splunk", "/summarise"),
-    ("Splunk", "/frequency"),
+    ("Splunk", "/query"),
     ("Threatq", "/lookup"),
     ("Confluence", "/match"),
 ]
@@ -30,10 +28,10 @@ def test_a_body_that_is_not_a_json_object_is_a_400(client, name, path, body):
 
 # Valid JSON, an object, and still nothing the route can use.
 EMPTY_ENOUGH = [
-    ("Splunk", "/search", {}),
-    ("Splunk", "/summarise", {}),
-    ("Splunk", "/frequency", {}),
-    ("Splunk", "/frequency", {"alert_name": "x", "days": "abc"}),
+    ("Splunk", "/query", {}),
+    ("Splunk", "/query", {"spl": ""}),
+    ("Splunk", "/query", {"spl": 123}),
+    ("Splunk", "/query", {"spl": 'search index="main"', "count": "abc"}),
     ("Threatq", "/lookup", {}),
     ("Threatq", "/lookup", {"indicators": []}),
     ("Threatq", "/lookup", {"indicators": "8.8.8.8"}),

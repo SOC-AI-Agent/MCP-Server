@@ -1,10 +1,15 @@
 """
-SPL construction, done here and never by the model.
+What this service will and will not run.
 
-Routes take structured parameters; this module turns them into the one search
-string that reaches Splunk. Nothing a caller supplies is interpolated raw, so a
-value carried in from an attacker-controlled log field cannot close the quote
-and append `| delete`.
+The backend writes the SPL (Backend: modules/enrichment/spl.ts) and sends it to
+/query. It is built there from a plan, with every value quoted and every name
+checked, but this service does not take that on trust: `check_query` refuses anything
+that is not a read-only search over an allowed index, whoever wrote it. The same rules,
+checked twice — a bug in one place, or a caller that is not the backend, should not be
+enough to run `| delete`.
+
+The quoting helpers below are what /catalog and the connection check use to build the
+few searches this service writes for itself.
 """
 
 import re
@@ -13,10 +18,9 @@ from config import settings
 
 
 class QueryError(ValueError):
-    """A parameter this service will not put into a search. Routes answer it with a 400."""
+    """Something this service will not run. Routes answer it with a 400."""
 
 
-_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,63}$")
 _INDEX_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-]{0,63}$")
 _TIME_RE = re.compile(
     r"^(?:now"
@@ -39,12 +43,6 @@ def quote_value(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def check_field(name: str) -> str:
-    if not _FIELD_RE.match(name):
-        raise QueryError(f"invalid field name: {name!r}")
-    return name
-
-
 def check_time(value: str, label: str) -> str:
     if not _TIME_RE.match(value):
         raise QueryError(
@@ -56,7 +54,7 @@ def check_time(value: str, label: str) -> str:
 
 def check_count(requested: int) -> int:
     if requested < 1:
-        raise QueryError("max_count must be >= 1")
+        raise QueryError("count must be >= 1")
     return min(requested, settings.SPLUNK_MAX_COUNT)
 
 
@@ -83,110 +81,80 @@ def index_clause(index: str | None) -> str:
     return "(" + " OR ".join(terms) + ")" if len(terms) > 1 else terms[0]
 
 
-def equality_terms(filters: dict[str, str]) -> str:
-    """`field="value"` pairs, ANDed."""
-    return " ".join(
-        f"{check_field(field)}={quote_value(value)}"
-        for field, value in filters.items()
-        if value is not None
-    )
+# ── check_query ─────────────────────────────────────────────────────────────
+
+# The commands the backend's own searches use, and nothing else. An allowlist,
+# because the list of SPL commands that write or reach out (delete, collect,
+# outputlookup, outputcsv, sendemail, script, run, map, rest, dbxquery, ...) is long
+# and grows with every release; the list of commands a read-only search needs is short.
+ALLOWED_COMMANDS = frozenset({"search", "tstats", "makeresults", "bin", "stats", "sort", "head"})
+# Searches over data. A `makeresults` on its own reads nothing, so it needs no index.
+_READS_DATA = frozenset({"search", "tstats"})
+
+MAX_QUERY_LEN = 4000
+
+_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
+_COMMAND = re.compile(r"\s*([A-Za-z_]+)")
+# `index="main"`, as it is looked for in the query as written…
+_INDEX_TERM = re.compile(r'\bindex\s*=\s*"((?:[^"\\]|\\.)*)"')
+# …and as it looks once every quoted literal has been reduced to "".
+_QUOTED_INDEX_TERM = re.compile(r'\bindex\s*=\s*""')
+# Any other way of naming an index: `index=main`, `index=*`, `index IN (…)`, `index!=…`.
+_OTHER_INDEX_TERM = re.compile(r"\bindex\s*(?:!=|<=|>=|=|<|>|\s+IN\b|\s+NOT\b)", re.IGNORECASE)
 
 
-# Aggregation functions a caller may ask for, and how each is written. An
-# allowlist rather than a check, because the whole point of building SPL here is
-# that no caller-supplied string reaches the search — `fn` is a key into this,
-# never text that gets interpolated.
-STATS_FUNCTIONS = {
-    "count": "count",
-    "distinct_count": "dc",
-    "sum": "sum",
-    "avg": "avg",
-    "min": "min",
-    "max": "max",
-    # The values themselves, not just how many. Capped by Splunk at
-    # `maxvalues`; useful for "which destinations", dangerous for a field with
-    # a million distinct values, so callers get a small ceiling.
-    "values": "values",
-}
-
-# 5m, 1h, 1d. Splunk accepts more, but a span is a bucket size and these are
-# the sizes anyone means.
-_SPAN_RE = re.compile(r"^\d{1,4}(?:s|m|h|d)$")
-
-MAX_GROUP_BY = 4
-MAX_METRICS = 6
-MAX_VALUES = 20
-
-
-def check_span(value: str) -> str:
-    if not _SPAN_RE.match(value):
-        raise QueryError(
-            f"invalid span: {value!r} — use a bucket size like 5m, 1h or 1d"
-        )
-    return value
-
-
-def stats_clause(metrics: list[dict], group_by: list[str]) -> str:
+def check_query(query: object) -> str:
     """
-    `| stats count, dc(dstip) as dstip_distinct by srcip, action`
+    Refuse anything that is not a read-only search over an allowed index.
 
-    Every field goes through check_field and every function through the
-    allowlist above, so nothing a caller wrote is interpolated into SPL. The
-    output column is named after what produced it, because a column called
-    `dc(dstip)` is awkward to read and impossible to sort on by name.
+    Quoted literals are set aside first, so a value like `blocked" | delete | head 1`
+    — safely inside its quotes, as the backend writes it — is not mistaken for a
+    command, and a real `| delete` outside any quotes is not missed. What is left is
+    checked for: subsearches and macros (which can hide a second search), any command
+    outside the short list above, and an index that is not named as `index="allowed"`.
     """
-    if not metrics:
-        raise QueryError("at least one metric is required")
-    if len(metrics) > MAX_METRICS:
-        raise QueryError(f"too many metrics (max {MAX_METRICS})")
-    if len(group_by) > MAX_GROUP_BY:
-        raise QueryError(f"too many group_by fields (max {MAX_GROUP_BY})")
+    if not isinstance(query, str) or not query.strip():
+        raise QueryError("spl is required")
+    query = query.strip()
+    if len(query) > MAX_QUERY_LEN:
+        raise QueryError(f"spl too long (max {MAX_QUERY_LEN} chars)")
+    if any(ch in query for ch in "\r\n\x00"):
+        raise QueryError("spl may not contain newlines or null bytes")
 
-    parts: list[str] = []
-    for metric in metrics:
-        name = (metric or {}).get("fn")
-        if name not in STATS_FUNCTIONS:
+    bare = _QUOTED.sub('""', query)
+    if '"' in bare.replace('""', ""):
+        raise QueryError("spl has an unbalanced quote")
+    if any(ch in bare for ch in "[]`"):
+        raise QueryError("subsearches and macros are not allowed")
+
+    segments = bare.split("|")
+    commands: list[str] = []
+    for position, segment in enumerate(segments):
+        if position == 0 and not segment.strip():
+            continue  # a query that opens with a pipe, like `| tstats ...`
+        match = _COMMAND.match(segment)
+        if not match:
+            raise QueryError("spl has an empty command")
+        name = match.group(1).lower()
+        if position == 0 and name != "search":
+            raise QueryError("spl must start with `search` or a `|` command")
+        if name not in ALLOWED_COMMANDS:
             raise QueryError(
-                f"unknown metric {name!r}; available: {', '.join(sorted(STATS_FUNCTIONS))}"
+                f"command {name!r} is not allowed; permitted: {', '.join(sorted(ALLOWED_COMMANDS))}"
             )
-        fn = STATS_FUNCTIONS[name]
-        if name == "count":
-            parts.append("count")
-            continue
-        field = (metric or {}).get("field")
-        if not field:
-            raise QueryError(f"metric {name!r} needs a field")
-        check_field(field)
-        column = f"{field}_{name}"
-        if name == "values":
-            parts.append(f"values({field}) as {column}")
-        else:
-            parts.append(f"{fn}({field}) as {column}")
+        commands.append(name)
 
-    clause = "stats " + ", ".join(parts)
-    if group_by:
-        clause += " by " + ", ".join(check_field(f) for f in group_by)
-    return clause
+    if settings.index_restriction_disabled or not _READS_DATA & set(commands):
+        return query
 
-
-def sort_clause(sort: str | None, allowed: set[str]) -> str:
-    """
-    `| sort -count`. The column must be one the stats above actually produced —
-    sorting on a column that does not exist is silently ignored by Splunk, and
-    the caller would read the first rows as the largest.
-    """
-    if not sort:
-        return ""
-    descending = sort.startswith("-")
-    column = sort[1:] if descending else sort
-    if column not in allowed:
-        raise QueryError(
-            f"cannot sort on {column!r}; the search produces: {', '.join(sorted(allowed))}"
-        )
-    return f"| sort {'-' if descending else ''}{check_field(column)} "
-
-
-def any_of_terms(fields: list[str], value: str) -> str:
-    """`(a="v" OR b="v")` — one indicator across several possible field names."""
-    quoted = quote_value(value)
-    return "(" + " OR ".join(f"{check_field(f)}={quoted}" for f in fields) + ")"
+    # Any index named some other way — unquoted, a wildcard, IN (...), != — is refused
+    # before anything is read into the allowlist check, because those are the forms
+    # that would slip a name past it.
+    if _OTHER_INDEX_TERM.search(_QUOTED_INDEX_TERM.sub("", bare)):
+        raise QueryError('an index must be written index="name", quoted and exact')
+    named = _INDEX_TERM.findall(query)
+    if not named:
+        raise QueryError('the search must name an index, as index="name"')
+    for raw in named:
+        check_index(raw.replace('\\"', '"').replace("\\\\", "\\"))
+    return query

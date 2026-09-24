@@ -5,7 +5,7 @@ and Confluence also publish MCP tools an agent can call.
 
 | Connector | Port | Fronts | How it is called |
 | --- | --- | --- | --- |
-| `Splunk/` | 8200 | Searching logs. Builds every search from structured parameters — a caller never writes SPL. | HTTP routes only. **No MCP, no model** — the backend plans each search from the catalogue and this runs it. |
+| `Splunk/` | 8200 | Running searches. The backend builds the SPL from a plan; this refuses anything that is not a read-only search over an allowed index. | `POST /query`, nothing else a caller uses. **No MCP, no model** — the backend plans each search from the catalogue and writes the SPL; this checks it (read-only, allowed indexes) and runs it. |
 | `Threatq/` | 8300 | Indicator reputation. | `POST /lookup` for the backend; the `lookup_indicator` tool for an agent (none uses it yet). |
 | `Confluence/` | 8600 | Which playbook covers an alert, and what it says. | `POST /match` for the backend; read-only tools for an agent. |
 

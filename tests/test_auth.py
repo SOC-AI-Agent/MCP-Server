@@ -7,7 +7,7 @@ from conftest import AUTH, TOKEN
 # One protected POST route each, none of which reaches a platform when the body
 # is empty — so getting past the gate shows up as a 400, not a network call.
 PROTECTED = [
-    ("Splunk", "/search"),
+    ("Splunk", "/query"),
     ("Threatq", "/lookup"),
     ("Confluence", "/match"),
 ]

@@ -28,10 +28,6 @@ class Settings(BaseSettings):
     # Hard ceiling on rows returned to a caller, whatever it asks for.
     SPLUNK_MAX_COUNT: int = 200
 
-    # Where correlation-search alerts land, and the field holding their name.
-    # Splunk ES defaults; override for a plain Splunk install.
-    SPLUNK_ALERT_INDEX: str = "notable"
-    SPLUNK_ALERT_NAME_FIELD: str = "search_name"
 
     @property
     def allowed_indexes(self) -> list[str]:

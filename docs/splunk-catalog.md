@@ -430,10 +430,10 @@ index fortigate (sourcetype fortigate_traffic)
 
 ## ตรวจว่าใช้ได้จริง
 
-หลังตั้งค่าเสร็จ ยิง route ตรงๆ ด้วย field ที่เพิ่งแมป ([testing.md](testing.md) ชั้น 2):
+หลังตั้งค่าเสร็จ ส่ง SPL ตรงๆ ด้วย field ที่เพิ่งแมป ([testing.md](testing.md) ชั้น 2):
 
 ```bash
-splunk /search '{"indicator":"10.1.100.11","indicator_type":"ip","fields":["srcip"],"index":"fortigate","max_count":3}'
+splunk '{"spl":"search index=\"fortigate\" (srcip=\"10.1.100.11\") | head 3"}'
 ```
 
-ได้ข้อมูลกลับมา = แมปถูก ได้ `count: 0` ทั้งที่รู้ว่ามีข้อมูล = ยังผิด (ดู `fields_searched` กับ `spl` ในผล)
+ได้ข้อมูลกลับมา = แมปถูก ได้ `count: 0` ทั้งที่รู้ว่ามีข้อมูล = ยังผิด (field ที่ใส่ไม่ใช่ field ที่ข้อมูลใช้จริง)
