@@ -32,8 +32,11 @@ Related scripts in the other repos:
 
 - `derive_signatures.py` — **Backend** repo, `scripts/`. Suggests field
   signatures for unplaced alerts; low-sample candidates are review-only by default.
-- `run_mockup.py` — **LLM-Server** repo, `scripts/`. Puts recovered ES
-  notables through an agent and prints the trace.
+- `run_mockup.py` — was **LLM-Server** repo, `scripts/`: put recovered ES
+  notables through an agent and printed the trace. LLM-Server is retired; the
+  agent platform is now [Agent-Server](../../Agent-Server/readme.md), which has
+  no equivalent script — test an agent from its own admin UI's "ทดสอบ Agent" tab,
+  or `POST /v1/agents/{slug}/chat` directly (see `Agent-Server/readme.md`).
 
 ### Exporting
 
