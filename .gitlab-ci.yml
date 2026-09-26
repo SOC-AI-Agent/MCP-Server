@@ -235,6 +235,11 @@ deploy_production:
       echo "  endpoints look like production"
 
     - echo "========== Build and start =========="
+    # soc-network is external (see docker-compose.yml) — shared with
+    # AI-service/Backend/Frontend's deploys, all on this same soc-deploy
+    # runner/host. Whichever of the four deploys first, creates it; idempotent
+    # so the other three deploying in any order or any number of times is fine.
+    - docker network create soc-network 2>/dev/null || true
     - docker compose up -d --build --wait
     - echo "========== Health =========="
     # localhost here is the container's own loopback, reached through
