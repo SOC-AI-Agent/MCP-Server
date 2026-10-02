@@ -8,7 +8,7 @@ checks it, and Splunk runs it. No model on our side writes SPL any more.
 stage 1 requirement (text + details from the alert; index, sourcetype and field names from the catalogue; the alert's window)
    │
 soc-core-worker ──MCP── saia_generate_spl ──► SPL            (Text-to-SPL: Splunk AI Assistant for SPL)
-   │  spl-guard: read-only, allowed indexes, the alert's window
+   │  spl-guard: read-only, the alert's window
    └──────────MCP── splunk_run_query ──► rows ──► answer on the job (with the SPL that ran) ──► soc-conclude
 ```
 
@@ -84,7 +84,7 @@ production path.
 
 Create a **service account** for the backend, not a person's account, with its own role:
 
-- **Search-only.** Only the indexes the SOC flow may read (`srchIndexesAllowed`) [8], no write or admin capabilities. In particular **not** `delete_by_keyword` (`delete`), `run_collect` (`collect`), `run_mcollect` (`mcollect`, `meventcollect`), `run_dump` (`dump`), `run_sendalert` (`sendalert`), `output_file` (`outputcsv`, `outputlookup`) or `run_custom_command` [8][11]. Give it modest search quotas.
+- **Search-only.** Only the indexes the SOC flow may read (`srchIndexesAllowed`) [8] — **this is the only control on which indexes a search reads**: the backend does not restrict indexes, so a generated search can read whatever this role can. Set `srchIndexesDefault` to the same list, because a search that names no index reads those. No write or admin capabilities. In particular **not** `delete_by_keyword` (`delete`), `run_collect` (`collect`), `run_mcollect` (`mcollect`, `meventcollect`), `run_dump` (`dump`), `run_sendalert` (`sendalert`), `output_file` (`outputcsv`, `outputlookup`) or `run_custom_command` [8][11]. Give it modest search quotas.
 - **`mcp_tool_execute`** — lets the role use MCP tools [2].
 - **Only two tools.** From MCP Server 1.3 the app's *Tools* tab maps roles to tools [2]. Give this role `saia_generate_spl` and `splunk_run_query` and nothing else: it needs no user lists, KV store or saved searches.
 
@@ -113,7 +113,6 @@ In `Backend/.env` (the deploy builds it from `.env.example` + CI variables):
 | --- | --- | --- |
 | `SPLUNK_MCP_URL` | `https://<search-head>:8089/services/mcp` | A bare `https://<search-head>:8089` gets `/services/mcp` added. |
 | `SPLUNK_MCP_TOKEN` | the encrypted token | CI variable. When blank, `MCP_AUTH_TOKEN` (the mock's) is sent instead. |
-| `SPLUNK_ALLOWED_INDEXES` | the same indexes as the role | Checked **before** a generated search is sent. A search that names no index is scoped to this list. Empty refuses every search; `*` opts out. |
 | `SPLUNK_SEARCH_TIMEOUT` | `120` | Seconds per MCP call. Text-to-SPL can take tens of seconds; Splunk stops a search at 1 minute anyway [4]. |
 | `SPLUNK_MAX_COUNT` | `200` | Rows kept per requirement. Splunk returns at most 1000 events [4]. |
 | `SPLUNK_LOOKUP_MODE` | `manual` | `manual`: an analyst presses the button. `auto`: every alert. `off`: no stage 2. |
@@ -142,7 +141,6 @@ docker exec soc-core-worker node dist/scripts/splunk-mcp-check.js
 endpoint       https://splunk.corp.example:8089/services/mcp
 token          set (… chars)
 tools          saia_generate_spl, splunk_run_query
-allowlist      fortigate, notable
 extra CA       /certs/company-ca.pem
 connected      yes — both tools found; Text-to-SPL takes the request in "<arg>"
 ```
@@ -160,7 +158,8 @@ docker exec soc-core-worker node dist/scripts/splunk-mcp-check.js "Failed VPN lo
 | `cannot connect … 401` | wrong or expired token, or a token not created in the MCP Server app |
 | `has no saia_generate_spl` | Splunk AI Assistant for SPL not installed or not activated, or the role is not mapped to the tool |
 | `returned no SPL` | Text-to-SPL answered in a shape the backend does not read — see 6 |
-| `the generated SPL reads index '…'` | the generated search left `SPLUNK_ALLOWED_INDEXES`; it was refused before it ran |
+| `the generated SPL uses 'delete'` (or another write/export command) | Text-to-SPL wrote a search that writes, deletes or sends data out; it was refused before it ran |
+| 0 rows from an index that should have data | the role cannot read that index (`srchIndexesAllowed`), or the search named no index and the role's default indexes (`srchIndexesDefault`) do not include it |
 
 ### 6. Watch the first runs
 
@@ -207,7 +206,7 @@ docker compose up -d --build soc-mcp-splunk
 ```
 
 In `Backend/.env`: `SPLUNK_MCP_URL=http://soc-mcp-splunk:8200/services/mcp`, the same
-`MCP_AUTH_TOKEN`, `SPLUNK_ALLOWED_INDEXES=main`, and `SPLUNK_LOOKUP_MODE=manual` or `auto`.
+`MCP_AUTH_TOKEN`, and `SPLUNK_LOOKUP_MODE=manual` or `auto`.
 `docker exec soc-core-worker node dist/scripts/splunk-mcp-check.js "Which destinations did 10.1.100.11 talk to"` runs one through.
 
 The events (`index=main sourcetype=fortigate`, all inside the last two hours):
@@ -316,7 +315,7 @@ Set in `../.env` (`../.env.local.example` is a skeleton).
 | `MCP_AUTH_TOKEN` | — **required** | Bearer token the backend presents. Same value in `Backend/.env`. |
 | `MCP_ALLOWED_HOSTS` | `soc-mcp-splunk:8200,localhost:8200,127.0.0.1:8200` | Host headers the MCP endpoint accepts. |
 | `SPLUNK_TOKEN` | — **required in live** | Splunk auth token for a search-only role. |
-| `SPLUNK_ALLOWED_INDEXES` | — **required in live** | Comma-separated allowlist, or `*` to opt out on purpose. Same list as `Backend/.env`. |
+| `SPLUNK_ALLOWED_INDEXES` | — **required in live** | Comma-separated allowlist, or `*` to opt out on purpose. The connector's own; the backend has no allowlist. |
 | `SPLUNK_BASE_URL` | — | Management port (8089), not the web UI on 8000. |
 | `SPLUNK_VERIFY_SSL` | `true` | `false` only for a self-signed lab cert. |
 | `SPLUNK_TIMEOUT` | `60` | Seconds per search. |
