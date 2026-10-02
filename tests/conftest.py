@@ -1,9 +1,8 @@
-"""Loads each connector on its own.
+"""Loads the connector with a throwaway environment.
 
-The three connectors are separate services that happen to share module names —
-each has its own server.py, config.py and auth.py — so they cannot be imported
-side by side. `connector("Splunk")` puts one on the path, imports its server
-with a throwaway environment, and takes it all back out afterwards.
+`connector("Splunk")` puts it on the path, imports its server with a throwaway
+environment, and takes it all back out afterwards. (There used to be three; the
+backend now calls ThreatQ and Confluence directly.)
 
 Nothing here contacts a platform. The platform URLs point at a closed local
 port, so anything that does reach for one fails at once instead of waiting on a
@@ -19,7 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parent.parent
-CONNECTORS = ("Splunk", "Threatq", "Confluence")
+CONNECTORS = ("Splunk",)
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -29,8 +28,6 @@ CLOSED = "http://127.0.0.1:9"
 # assert that none of them ever appears in an answer.
 SECRETS = {
     "Splunk": "splunk-secret-value",
-    "Threatq": "threatq-secret-value",
-    "Confluence": "confluence-secret-value",
 }
 
 ENV = {
@@ -39,18 +36,6 @@ ENV = {
         "SPLUNK_TOKEN": SECRETS["Splunk"],
         "SPLUNK_ALLOWED_INDEXES": "main",
         "SPLUNK_BASE_URL": CLOSED,
-    },
-    "Threatq": {
-        "THREATQ_MCP_AUTH_TOKEN": TOKEN,
-        "THREATQ_AUTH_MODE": "bearer",
-        "THREATQ_TOKEN": SECRETS["Threatq"],
-        "THREATQ_BASE_URL": CLOSED,
-    },
-    "Confluence": {
-        "CONFLUENCE_MCP_AUTH_TOKEN": TOKEN,
-        "CONFLUENCE_BASE_URL": CLOSED,
-        "CONFLUENCE_API_TOKEN": SECRETS["Confluence"],
-        "CONFLUENCE_SPACE_KEY": "SOC",
     },
 }
 
@@ -136,7 +121,7 @@ def connector(monkeypatch, tmp_path):
 
 @pytest.fixture
 def client(connector):
-    """`client("Threatq")` -> a test client. A crash comes back as a 500 to be
+    """`client("Splunk")` -> a test client. A crash comes back as a 500 to be
     asserted on, not as an exception thrown into the test."""
 
     def make(name: str, **env) -> TestClient:

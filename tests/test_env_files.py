@@ -19,16 +19,12 @@ ACTIVE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 NOT_A_SETTING = {"SSL_CERT_FILE"}
 
 # validate_startup() refuses to start without each of these.
+# validate_startup() refuses to start without each of these in live mode.
 REFUSES_TO_START_WITHOUT = {
     "Splunk": ["MCP_AUTH_TOKEN", "SPLUNK_TOKEN", "SPLUNK_ALLOWED_INDEXES"],
-    "Threatq": ["THREATQ_MCP_AUTH_TOKEN"],
-    "Confluence": ["CONFLUENCE_MCP_AUTH_TOKEN", "CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN"],
 }
-# Not startup checks, but a connector cannot be used without them.
-ALSO_NEEDED = [
-    "SPLUNK_BASE_URL", "THREATQ_BASE_URL", "CONFLUENCE_SPACE_KEY",
-    "THREATQ_CLIENT_ID", "THREATQ_EMAIL", "THREATQ_PASSWORD",  # oauth, the default mode
-]
+# Not startup checks, but live mode cannot be used without them.
+ALSO_NEEDED = ["SPLUNK_BASE_URL", "SPLUNK_MODE"]
 
 
 def settings_in(path) -> dict[str, str]:

@@ -11,9 +11,20 @@ class Settings(BaseSettings):
     MCP_PORT: int = 8200
     # Callers (the backend) must send `Authorization: Bearer <this>`. No default:
     # an unauthenticated service is a shell into Splunk for anything that lands
-    # on soc-network. (The MCP_ prefix is the name it had as an MCP server; it is
-    # kept so the token keeps its name in every .env and CI variable.)
+    # on soc-network.
     MCP_AUTH_TOKEN: str = ""
+    # Host headers the MCP transport accepts (its DNS-rebinding defence): the
+    # compose name the backend uses, and localhost for the healthcheck.
+    MCP_ALLOWED_HOSTS: str = "soc-mcp-splunk:8200,localhost:8200,127.0.0.1:8200"
+
+    # mock: the MCP tools answer from mock.py — Text-to-SPL is a template and the
+    #       data is a fixed set of events. Needs no Splunk and no Splunk token.
+    # live: splunk_run_query runs against SPLUNK_BASE_URL. saia_generate_spl has
+    #       no live form here: Text-to-SPL is Splunk AI Assistant, reached through
+    #       Splunk's own MCP server (see README "Production").
+    # Live by default, so a deployment that forgets to choose cannot serve
+    # made-up data as if it were Splunk.
+    SPLUNK_MODE: str = "live"
 
     # ── Splunk ──────────────────────────────────────────────────────────────
     SPLUNK_BASE_URL: str = "https://splunk:8089"
@@ -30,6 +41,14 @@ class Settings(BaseSettings):
 
 
     @property
+    def mock(self) -> bool:
+        return self.SPLUNK_MODE.strip().lower() == "mock"
+
+    @property
+    def allowed_hosts(self) -> list[str]:
+        return [h.strip() for h in self.MCP_ALLOWED_HOSTS.split(",") if h.strip()]
+
+    @property
     def allowed_indexes(self) -> list[str]:
         return [i.strip() for i in self.SPLUNK_ALLOWED_INDEXES.split(",") if i.strip()]
 
@@ -43,9 +62,16 @@ settings = Settings()
 
 def validate_startup() -> None:
     """Fail loudly at boot rather than silently serving an open Splunk proxy."""
+    if settings.SPLUNK_MODE.strip().lower() not in ("mock", "live"):
+        raise RuntimeError(f"SPLUNK_MODE must be mock or live, not {settings.SPLUNK_MODE!r}")
     missing = []
     if not settings.MCP_AUTH_TOKEN:
         missing.append("MCP_AUTH_TOKEN")
+    if settings.mock:
+        # Mock talks to no Splunk, so it needs no Splunk credentials.
+        if missing:
+            raise RuntimeError("refusing to start, unset required env: " + ", ".join(missing))
+        return
     if not settings.SPLUNK_TOKEN:
         missing.append("SPLUNK_TOKEN")
     if not settings.allowed_indexes:

@@ -8,8 +8,6 @@ from conftest import AUTH, TOKEN
 # is empty — so getting past the gate shows up as a 400, not a network call.
 PROTECTED = [
     ("Splunk", "/query"),
-    ("Threatq", "/lookup"),
-    ("Confluence", "/match"),
 ]
 
 
@@ -52,6 +50,6 @@ def test_the_right_token_gets_past_the_gate(client, name, path):
     assert resp.status_code == 400  # refused for the empty body, not for who asked
 
 
-@pytest.mark.parametrize("name", ["Splunk", "Threatq"])
+@pytest.mark.parametrize("name", ["Splunk"])
 def test_health_needs_no_token(client, name):
     assert client(name).get("/health").status_code == 200

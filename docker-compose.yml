@@ -1,14 +1,17 @@
-# The MCP connectors, on their own.
+# soc-mcp-splunk — Splunk over MCP, for development.
 #
-# One connector per external platform (Splunk, ThreatQ, Confluence). They hold
-# no job state and share nothing but this file — each carries its own bearer
-# token, because one stolen token should not open all three.
+# An MCP server shaped like Splunk's own MCP Server app (tools saia_generate_spl
+# and splunk_run_query at /services/mcp). In SPLUNK_MODE=mock it answers from a
+# fixed set of events; in production the backend points SPLUNK_MCP_URL at
+# Splunk's own MCP server instead and this is not deployed. See Splunk/README.md.
 #
-#   cp .env.example .env    # fill in the platform credentials
+# ThreatQ and Confluence are not here: the backend calls them directly.
+#
+#   cp .env.example .env    # MCP_AUTH_TOKEN, same value as Backend/.env
 #   docker compose up -d --build
 #
-# Nothing here is reachable from outside the network by default. The backend
-# and the LLM server join `soc-network` and address them by container name.
+# Nothing here is reachable from outside the network. The backend joins
+# `soc-network` and addresses it by container name.
 
 services:
   soc-mcp-splunk:
@@ -22,36 +25,6 @@ services:
       - ./certs:/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8200/health', timeout=5).status==200 else 1)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-    networks: [soc-network]
-
-  soc-mcp-threatq:
-    build:
-      context: ./Threatq
-    container_name: soc-mcp-threatq
-    env_file: [.env]
-    volumes:
-      - ./certs:/certs:ro
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8300/health', timeout=5).status==200 else 1)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-    networks: [soc-network]
-
-  soc-mcp-confluence:
-    build:
-      context: ./Confluence
-    container_name: soc-mcp-confluence
-    env_file: [.env]
-    volumes:
-      - ./certs:/certs:ro
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8600/health', timeout=5).status==200 else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 3

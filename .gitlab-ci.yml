@@ -1,130 +1,21 @@
-# MCP-Server — three connectors, built and deployed together.
+# MCP-Server — soc-mcp-splunk, Splunk over MCP, for development.
 #
-# They share this repo and this pipeline, and each carries its own bearer
-# token so one stolen token does not open all three.
+# Not deployed. In production the backend talks to Splunk's own MCP Server app
+# directly (Splunk/README.md, "Production"), so this pipeline only builds the
+# image and runs the tests. The data catalogue, its scripts and the
+# export_catalog job moved to the Backend repo (Backend/docs/splunk-catalog.md).
 #
-# MCP_AUTH_TOKEN, THREATQ_MCP_AUTH_TOKEN and CONFLUENCE_MCP_AUTH_TOKEN must
-# match the Backend project's byte for byte. Set them as GROUP variables, not
-# per project: two copies are two things that drift, and the failure is a 401
-# with nothing saying why.
+# ThreatQ and Confluence are no longer here either: the backend calls them
+# directly.
 
 stages:
   - build
   - test
-  - deploy
-
-
-# ── Reusable: write .env from CI variables ──────────────────────────────────
-#
-# Not sed. A password containing | or / breaks the expression, and one
-# containing & is silently replaced by the matched text — the pipeline goes
-# green and the service cannot log in. This reads the keys from .env.example
-# and takes any that exist in the environment, whatever characters they hold.
-#
-# The result is never an artifact and never printed. The monorepo's job did
-# both: `artifacts: paths: [.env]` put filled-in production credentials in
-# GitLab's artifact store for a week, downloadable by anyone with project
-# access, and `cat .env | grep -v PASSWORD | grep -v SECRET | grep -v URL`
-# printed everything else — including MCP_AUTH_TOKEN, SPLUNK_TOKEN,
-# THREATQ_TOKEN and CONFLUENCE_API_TOKEN, none of which contain those words.
-.write_env: &write_env |
-  set -eu
-  : > .env
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      ''|'#'*) printf '%s\n' "$line" >> .env; continue ;;
-    esac
-    key=${line%%=*}
-    if [ "$key" = "$line" ]; then printf '%s\n' "$line" >> .env; continue; fi
-    if eval "[ \"\${${key}+set}\" = set ]"; then
-      eval "printf '%s=%s\n' \"\$key\" \"\$$key\"" >> .env
-    else
-      printf '%s\n' "$line" >> .env
-    fi
-  done < .env.example
-  echo "wrote .env — keys taken from CI variables:"
-  # Names only. The values are the point of the exercise.
-  while IFS= read -r line; do
-    key=${line%%=*}
-    case "$key" in ''|'#'*) continue ;; esac
-    if eval "[ \"\${${key}+set}\" = set ]"; then echo "  $key"; fi
-  done < .env.example
-
-# ── Splunk data catalogue ───────────────────────────────────────────────────
-# Ported from .github/workflows/splunk-catalog.yml when this moved to GitLab.
-#
-# Exports what the estate actually holds — indexes, sourcetypes, fields — into
-# Splunk/table/, and only when there is not already a complete export there.
-#
-# Manual, not on a schedule. It runs searches against a production search head,
-# and the catalogue changes when the estate does, not on a timer. Run it after
-# onboarding a new source, or when a lookup starts reporting that the catalogue
-# names no field for something.
-#
-#   Variables: SPLUNK_URL, SPLUNK_TOKEN, and a runner that can reach 8089.
-export_catalog:
-  stage: build
-  image: python:3.12
-  when: manual
-  # Needs to reach Splunk's management port, which a shared runner cannot.
-  tags:
-    # The runner installed on the machine that hosts the stack. Named for what
-    # it is for, not for what the old machine was called — the job that needs
-    # it needs it because the runner IS the deployment target, and a tag saying
-    # so is the difference between "which runner" and "which server".
-    - soc-deploy
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-  script:
-    - |
-      set -eu
-      : "${SPLUNK_URL:?set SPLUNK_URL, e.g. https://splunk.internal:8089}"
-      : "${SPLUNK_TOKEN:?set SPLUNK_TOKEN}"
-
-      # "Already there" is not "the directory exists". An export that died
-      # after writing indexes.json leaves one behind, and a catalogue listing
-      # three of an estate's two hundred sourcetypes is worse than none: the
-      # agent is told the estate is small, searches what it was given, finds
-      # nothing, and reports that nothing happened.
-      if python3 scripts/verify_catalog_export.py Splunk/table; then
-        echo "a complete catalogue is already committed — nothing to do"
-        exit 0
-      fi
-
-      # Into a staging directory. A run that dies partway leaves the committed
-      # catalogue untouched rather than replacing it with a shorter one.
-      SPLUNK_AUTH="Bearer $SPLUNK_TOKEN" \
-      SPLUNK_INSECURE="${SPLUNK_INSECURE:-0}" \
-      OUT="$CI_PROJECT_DIR/catalog-staging" \
-        python3 scripts/export_splunk_catalog.py
-
-      # The same check, again. One definition of "usable" for both questions —
-      # the day two separate checks disagree is the day a half-written
-      # catalogue is committed by the looser one.
-      python3 scripts/verify_catalog_export.py "$CI_PROJECT_DIR/catalog-staging"
-
-      rm -rf Splunk/table
-      mv "$CI_PROJECT_DIR/catalog-staging" Splunk/table
-      echo "exported:"
-      python3 scripts/verify_catalog_export.py Splunk/table
-  artifacts:
-    name: "splunk-catalog-${CI_COMMIT_SHORT_SHA}"
-    expire_in: 30 days
-    paths:
-      - Splunk/table/
-    # The export holds field names and, depending on the flags used, example
-    # values from real events. It is an artifact rather than a commit so a
-    # person looks at it before it reaches the repo — the GitHub version
-    # committed it straight back, which put production field values into git
-    # history where they cannot be taken out again.
 
 build_image:
   stage: build
   image: docker:latest
-  # A shared runner has no Docker daemon of its own, so one is started
-  # alongside. The deploy job does the opposite — it wants the daemon of the
-  # host it is deploying to — which is why this is set per job rather than
-  # once at the top.
+  # A shared runner has no Docker daemon of its own, so one is started alongside.
   services:
     - docker:dind
   variables:
@@ -132,8 +23,6 @@ build_image:
     DOCKER_TLS_CERTDIR: ""
   script:
     - docker build -t soc-mcp-splunk:${CI_COMMIT_SHORT_SHA} ./Splunk
-    - docker build -t soc-mcp-threatq:${CI_COMMIT_SHORT_SHA} ./Threatq
-    - docker build -t soc-mcp-confluence:${CI_COMMIT_SHORT_SHA} ./Confluence
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
@@ -141,34 +30,20 @@ code_test:
   stage: test
   image: python:3.12
   script:
-    # Each connector's own requirements, not one of them for all three. They
-    # happen to match today; the day one of them needs a package the others do
-    # not, installing only Splunk's would fail the import of whichever gained
-    # the dependency and look like a code error.
-    - |
-      set -eu
-      for c in Splunk Threatq Confluence; do
-        pip install -q -r "$c/requirements.txt"
-      done
+    - pip install -q -r Splunk/requirements.txt
     # Imported, not just compiled. A missing dependency, or a route function
     # shadowing the module it imports, only shows up when the module runs —
     # both have happened in this repo.
     #
-    # Each connector refuses to start without its bearer token, so a throwaway
+    # The connector refuses to start without its bearer token, so a throwaway
     # one is supplied. It reaches nothing: no platform is contacted at import.
+    # Both modes, because each validates a different set of settings.
     - |
       set -eu
-      # Every value here is a throwaway. Each connector validates its config at
-      # import and refuses to start without one — which is the behaviour we
-      # want in production and the reason a bare import fails here. Nothing is
-      # contacted: validation reads the settings, it does not use them.
-      export MCP_AUTH_TOKEN=ci THREATQ_MCP_AUTH_TOKEN=ci CONFLUENCE_MCP_AUTH_TOKEN=ci
-      export SPLUNK_TOKEN=ci SPLUNK_ALLOWED_INDEXES=main
-      export THREATQ_CLIENT_ID=ci THREATQ_EMAIL=ci@example.invalid THREATQ_PASSWORD=ci
-      export CONFLUENCE_BASE_URL=https://ci.invalid CONFLUENCE_API_TOKEN=ci
-      for c in Splunk Threatq Confluence; do
-        ( cd "$c" && python -c "import server" ) || { echo "$c failed to import"; exit 1; }
-        echo "  $c imports cleanly"
+      export MCP_AUTH_TOKEN=ci SPLUNK_TOKEN=ci SPLUNK_ALLOWED_INDEXES=main
+      for mode in live mock; do
+        ( cd Splunk && SPLUNK_MODE=$mode python -c "import server" ) || { echo "Splunk ($mode) failed to import"; exit 1; }
+        echo "  Splunk ($mode) imports cleanly"
       done
     # What each route does with a body or a token it did not expect. Nothing
     # here contacts a platform; tests/conftest.py supplies its own environment.
@@ -178,112 +53,3 @@ code_test:
       python -m pytest tests -q
   rules:
     - if: '$CI_COMMIT_BRANCH'
-
-deploy_production:
-  stage: deploy
-  image: docker:latest
-  # The only job that needs a specific runner. DOCKER_HOST points at the
-  # socket of the machine this runs on, so the runner *is* the deployment
-  # target — a shared runner would build the stack inside a throwaway
-  # container and take it away again.
-  tags:
-    # The runner installed on the machine that hosts the stack. Named for what
-    # it is for, not for what the old machine was called — the job that needs
-    # it needs it because the runner IS the deployment target, and a tag saying
-    # so is the difference between "which runner" and "which server".
-    - soc-deploy
-  variables:
-    # The socket of the machine this runner is on: the deployment target.
-    DOCKER_HOST: unix:///var/run/docker.sock
-    DOCKER_TLS_CERTDIR: ""
-  environment:
-    name: production
-    # The address GitLab shows and links to. It is where the service actually
-    # answers, so it comes from a variable — localhost here would be a link to
-    # the runner, which is not where anyone reads this from.
-    url: '$MCP_SERVER_URL'
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  script:
-    - *write_env
-
-    - echo "========== 0. Is this pointing at the real thing? =========="
-    # A URL that is unset, or is one of the old workstation stand-ins (a Splunk
-    # container, threatq.local), is not a platform. .env.example leaves them
-    # blank, and a blank one fails quietly: the connector starts, and the first
-    # sign is an alert that got no answer. Splunk, ThreatQ and Confluence all run
-    # outside this Docker network, so each has to be set to where it really is.
-    - |
-      set -eu
-      . ./.env
-      fail=0
-      case "${SPLUNK_BASE_URL:-}" in
-        ""|*splunk:8089*|*localhost*|*127.0.0.1*)
-          echo "SPLUNK_BASE_URL is ${SPLUNK_BASE_URL:-unset} — set it to the real Splunk"; fail=1 ;;
-      esac
-      case "${THREATQ_BASE_URL:-}" in
-        ""|*threatq.local*|*://threatq[:/]*|*localhost*)
-          echo "THREATQ_BASE_URL is ${THREATQ_BASE_URL:-unset} — set it to the real ThreatQ"; fail=1 ;;
-      esac
-      case "${CONFLUENCE_BASE_URL:-}" in
-        "") echo "CONFLUENCE_BASE_URL is unset — the connector will refuse to start"; fail=1 ;;
-      esac
-      if [ "${SPLUNK_VERIFY_SSL:-true}" != "true" ] || [ "${THREATQ_VERIFY_SSL:-true}" != "true" ]; then
-        echo "TLS verification is off — fine for a self-signed lab cert, not for this"; fail=1
-      fi
-      [ "$fail" = 0 ] || { echo; echo "refusing to deploy against test doubles"; exit 1; }
-      echo "  endpoints look like production"
-
-    - echo "========== Build and start =========="
-    # soc-network is external (see docker-compose.yml) — shared with
-    # AI-service/Backend/Frontend's deploys, all on this same soc-deploy
-    # runner/host. Whichever of the four deploys first, creates it; idempotent
-    # so the other three deploying in any order or any number of times is fine.
-    - docker network create soc-network 2>/dev/null || true
-    - docker compose up -d --build --wait
-    - echo "========== Health =========="
-    # localhost here is the container's own loopback, reached through
-    # docker compose exec — not the runner's. It is the right address
-    # for asking a service whether it came up.
-    # Each connector answers /health unauthenticated. Only the status code is
-    # read here: it says the process is up, not that its platform is reachable
-    # (the body carries that as a flag, which this loop does not look at).
-    # Splunk, ThreatQ and Confluence are checked properly in the step after this one.
-    - |
-      set -eu
-      for pair in soc-mcp-splunk:8200 soc-mcp-threatq:8300 soc-mcp-confluence:8600; do
-        name=${pair%%:*}; port=${pair##*:}; ok=no
-        for i in $(seq 1 20); do
-          if docker compose exec -T "$name" python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:$port/health',timeout=5).status==200 else 1)" 2>/dev/null; then ok=yes; break; fi
-          sleep 3
-        done
-        [ "$ok" = yes ] || { echo "$name never became healthy"; docker compose logs --tail 40 "$name"; exit 1; }
-        echo "  $name healthy"
-      done
-
-    - echo "========== Platform connections =========="
-    # Healthy is not connected. Each of these goes out to its platform with the
-    # service account and checks the host answers, the credentials are accepted
-    # and the account can do what the connector needs (search in Splunk, read
-    # indicators in ThreatQ, see the playbook space in Confluence). None of the
-    # three runs in this Docker network: each is reached over the company network
-    # from this host, so a firewall, a DNS name or an internal CA the container
-    # does not trust shows up here as failed_at "reach". A wrong token turns the
-    # pipeline red here, with
-    # the step that failed printed above — not at the first alert that needed
-    # an answer. Containers are already up by now; red is the signal, there is
-    # no rollback.
-    #
-    # Both are always checked, so one failing does not hide the other. One
-    # attempt each, on purpose: retrying a rejected password is how an account
-    # gets locked. A transient failure is a re-run of the job.
-    - |
-      set -eu
-      fail=0
-      for name in soc-mcp-splunk soc-mcp-threatq soc-mcp-confluence; do
-        echo "--- $name"
-        docker compose exec -T "$name" python check_connection.py || fail=1
-        echo
-      done
-      [ "$fail" = 0 ] || { echo "a platform is not usable — failed_at and error are above"; exit 1; }
-      echo "  Splunk, ThreatQ and Confluence connected"

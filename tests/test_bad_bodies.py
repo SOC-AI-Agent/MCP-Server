@@ -10,8 +10,6 @@ from conftest import AUTH
 
 ROUTES = [
     ("Splunk", "/query"),
-    ("Threatq", "/lookup"),
-    ("Confluence", "/match"),
 ]
 
 NOT_AN_OBJECT = [b"[]", b"null", b'"x"', b"123"]
@@ -32,10 +30,6 @@ EMPTY_ENOUGH = [
     ("Splunk", "/query", {"spl": ""}),
     ("Splunk", "/query", {"spl": 123}),
     ("Splunk", "/query", {"spl": 'search index="main"', "count": "abc"}),
-    ("Threatq", "/lookup", {}),
-    ("Threatq", "/lookup", {"indicators": []}),
-    ("Threatq", "/lookup", {"indicators": "8.8.8.8"}),
-    ("Confluence", "/match", {}),
 ]
 
 

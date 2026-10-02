@@ -1,24 +1,34 @@
 """
-Splunk, behind a small HTTP API for the backend.
+Splunk for the backend, over MCP — shaped like Splunk's own MCP Server.
 
-The backend plans a search and writes the SPL itself (Backend:
-modules/enrichment/spl.ts); this service runs it at POST /query, after checking it
-again (spl.check_query): a read-only search over an allowed index, nothing else.
-Nothing here builds a search from parameters.
+The backend's Splunk stage sends each requirement, as text, to `saia_generate_spl`
+(Text-to-SPL), and runs the SPL that comes back with `splunk_run_query`. Those are
+the names Splunk's MCP Server app gives these tools, served at the path it serves
+them (/services/mcp), so moving the backend to real Splunk is a change of URL and
+token, not of code — see README "Production".
 
-There is no MCP layer and no model in this service. It used to publish searches as MCP
-tools for an agent, then as parameter routes for the backend; both are gone. What is
-left is /query, the operator's /catalog, and the connection check.
+SPLUNK_MODE=mock answers both tools from mock.py. live runs splunk_run_query against
+SPLUNK_BASE_URL; Text-to-SPL itself only exists in Splunk. Either way a search is
+checked before it runs (spl.check_readonly): nothing that writes, deletes, sends or
+executes, and only allowed indexes.
+
+No model runs here and no agent calls these tools: the backend calls them, one
+requirement at a time. The plain routes stay — POST /query (SPL the backend wrote,
+under the stricter spl.check_query), the operator's /catalog and the connection
+check.
 """
 
 import json
 import logging
 
-from starlette.applications import Starlette
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
 
+import mock
 import spl
 from auth import BearerAuthMiddleware
 from config import settings, validate_startup
@@ -30,17 +40,65 @@ logging.basicConfig(
 )
 logger = logging.getLogger("server")
 
-_routes: list[Route] = []
+mcp = MCPServer(settings.MCP_SERVER_NAME)
 
 
-def route(path: str, methods: list[str]):
-    """Register a handler. Collected here and handed to Starlette at the bottom."""
+# ── MCP tools ──────────────────────────────────────────────────────────────────
+# Named, and argued, as Splunk's MCP Server names them.
 
-    def register(handler):
-        _routes.append(Route(path, handler, methods=methods))
-        return handler
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True)
+# Splunk's own guardrail fails a search that answers more than 1000 events.
+MAX_EVENTS = 1000
 
-    return register
+
+@mcp.tool(annotations=_READ_ONLY)
+async def saia_generate_spl(prompt: str) -> dict:
+    """Generate SPL from a natural-language search request (Splunk AI Assistant for SPL)."""
+    if not prompt or not prompt.strip():
+        raise ToolError("prompt is required")
+    if not settings.mock:
+        raise ToolError(
+            "Text-to-SPL is Splunk AI Assistant for SPL, served by Splunk's own MCP server. "
+            "This connector only imitates it in SPLUNK_MODE=mock; point the backend's "
+            "SPLUNK_MCP_URL at https://<splunk>:8089/services/mcp instead."
+        )
+    generated = mock.generate_spl(prompt)
+    logger.info("saia_generate_spl (mock) -> %s", generated["spl"])
+    return generated
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def splunk_run_query(query: str, workload_pool: str | None = None) -> dict:
+    """Execute a Splunk search query (SPL) and return the results.
+
+    workload_pool is accepted for compatibility with Splunk's MCP Server and unused here.
+    """
+    try:
+        checked = spl.check_readonly(query)
+    except spl.QueryError as exc:
+        raise ToolError(str(exc)) from exc
+
+    limit = min(MAX_EVENTS, settings.SPLUNK_MAX_COUNT)
+    if settings.mock:
+        rows = mock.run_query(checked, limit)
+    else:
+        search = checked if checked.startswith(("search", "|")) else f"search {checked}"
+        try:
+            # The search's own earliest=/latest= win over this default window.
+            rows = await splunk.search(search, "-24h", "now", limit)
+        except SplunkError as exc:
+            raise ToolError(str(exc)) from exc
+    logger.info("splunk_run_query (%s) -> %d row(s): %s", settings.SPLUNK_MODE, len(rows), checked)
+    return {"results": rows, "count": len(rows), "limit": limit, "mock": settings.mock}
+
+
+# ── Plain routes ───────────────────────────────────────────────────────────────
+
+CATALOG_MAX_SAMPLE = 5000
+CATALOG_MAX_SOURCETYPES = 200
+# Splunk bookkeeping. None of it helps anyone decide which field means "source
+# IP", and punct is noisy enough to bury what does.
+CATALOG_SKIP_FIELDS = frozenset({"punct", "linecount", "eventtype", "tag", "index", "splunk_server"})
 
 
 def _flag(request: Request, name: str) -> bool:
@@ -57,7 +115,7 @@ def _int_param(request: Request, name: str, default: int, ceiling: int) -> int:
         return default
 
 
-@route("/catalog", methods=["GET"])
+@mcp.custom_route("/catalog", methods=["GET"])
 # Named for what it is rather than for its path: `catalog` is the module that
 # holds the curated file, and a route function of the same name shadows it.
 async def catalog_route(request: Request) -> JSONResponse:
@@ -152,10 +210,9 @@ async def catalog_route(request: Request) -> JSONResponse:
 
 
 # ── Query ───────────────────────────────────────────────────────────────────
-# The backend writes the SPL (Backend: modules/enrichment/spl.ts — the index
-# allowlist, the field checks, the quoting) and sends it here to be run. This route
-# does not trust that: check_query refuses anything that is not a read-only search
-# over an allowed index, whoever is asking. It is the same rule set, checked twice.
+# SPL an operator writes by hand, run in live mode — the stage-2 path is the MCP
+# tools above. check_query refuses anything that is not a read-only search over an
+# allowed index, whoever is asking.
 #
 #   POST /query  {"spl": "search index=\"main\" srcip=\"10.1.100.11\" | head 20",
 #                 "earliest": "-24h", "latest": "now", "count": 20}
@@ -166,7 +223,7 @@ async def catalog_route(request: Request) -> JSONResponse:
 #
 # Behind the same bearer middleware as everything except /health.
 
-@route("/query", methods=["POST"])
+@mcp.custom_route("/query", methods=["POST"])
 async def query_route(request: Request) -> JSONResponse:
     try:
         body = await request.json()
@@ -196,7 +253,7 @@ async def query_route(request: Request) -> JSONResponse:
     )
 
 
-@route("/check-connection", methods=["GET"])
+@mcp.custom_route("/check-connection", methods=["GET"])
 async def check_connection_route(_: Request) -> JSONResponse:
     """
     Whether this connector can reach and use Splunk, and where it stops if not.
@@ -212,7 +269,7 @@ async def check_connection_route(_: Request) -> JSONResponse:
     return JSONResponse(result, status_code=200 if result["connected"] else 502)
 
 
-@route("/health", methods=["GET"])
+@mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     return JSONResponse(
         {"status": "ok", "server": settings.MCP_SERVER_NAME, "splunk": await splunk.reachable()}
@@ -221,13 +278,23 @@ async def health(_: Request) -> JSONResponse:
 
 validate_startup()
 
-# No per-client session state, so any replica can serve any request.
-app = Starlette(routes=_routes)
+app = mcp.streamable_http_app(
+    # Where Splunk's MCP Server answers, so the backend's URL keeps the same shape.
+    streamable_http_path="/services/mcp",
+    # No per-client session state, so any replica can serve any request.
+    stateless_http=True,
+    json_response=True,
+    transport_security=TransportSecuritySettings(allowed_hosts=settings.allowed_hosts),
+)
 app.add_middleware(BearerAuthMiddleware, token=settings.MCP_AUTH_TOKEN)
 
-logger.info(
-    "%s ready on :%d — indexes=%s",
-    settings.MCP_SERVER_NAME,
-    settings.MCP_PORT,
-    settings.SPLUNK_ALLOWED_INDEXES,
-)
+if settings.mock:
+    logger.warning(
+        "%s ready on :%d — SPLUNK_MODE=mock: MCP tools answer from mock.py, not Splunk",
+        settings.MCP_SERVER_NAME, settings.MCP_PORT,
+    )
+else:
+    logger.info(
+        "%s ready on :%d — live, indexes=%s",
+        settings.MCP_SERVER_NAME, settings.MCP_PORT, settings.SPLUNK_ALLOWED_INDEXES,
+    )

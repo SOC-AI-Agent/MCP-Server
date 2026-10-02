@@ -1,18 +1,17 @@
-"""The Splunk connector as a plain HTTP API: it runs the SPL the backend sends.
+"""The Splunk connector's plain HTTP route: POST /query runs the SPL it is sent.
 
-No MCP transport and no model. The backend writes the search; this service checks
-it again — a read-only search over an allowed index, nothing else — and runs it.
+The MCP tools are in test_splunk_mcp.py. This route checks the search — a
+read-only search over an allowed index, nothing else — and runs it.
 These check what it runs, what it refuses, and what it answers when Splunk is the
 one that is wrong.
 """
 
-import re
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
-from conftest import AUTH, ROOT
+from conftest import AUTH
 
 SEARCH = "/services/search/jobs"
 
@@ -35,7 +34,7 @@ def sent_to_splunk(platform):
     return {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
 
 
-# What the backend writes (Backend: modules/enrichment/spl.ts) — every shape it uses.
+# The shapes the backend used to write for /query (kept: they are what an operator sends).
 BACKEND_SPL = [
     'search index="main" (srcip="10.1.100.11" OR dstip="10.1.100.11") sourcetype="fortigate" | head 20',
     'search (index="main" OR index="notable") (user="jdoe") | head 20',
@@ -156,20 +155,10 @@ def test_a_splunk_failure_is_a_502_not_a_400(platform, client, reply, said):
     assert said in resp.json()["error"]
 
 
-# ── there is no MCP layer, and no parameter routes ─────────────────────────
+# ── the old parameter routes are gone ──────────────────────────────────────
 
-def test_the_mcp_transport_and_the_old_routes_are_gone(client):
+def test_the_old_parameter_routes_are_gone(client):
     splunk = client("Splunk")
-    for path in ("/mcp", "/search", "/summarise", "/frequency"):
+    for path in ("/search", "/summarise", "/frequency"):
         assert splunk.post(path, json={}).status_code == 401  # the gate still answers first
         assert splunk.post(path, json={}, headers=AUTH).status_code == 404, path
-
-
-def test_the_service_no_longer_depends_on_the_mcp_sdk():
-    imports = [
-        path.name
-        for path in (ROOT / "Splunk").glob("*.py")
-        if re.search(r"^\s*(from|import) mcp\b", path.read_text(), re.M)
-    ]
-    assert imports == []
-    assert "mcp" not in (ROOT / "Splunk" / "requirements.txt").read_text().replace("MCP", "")

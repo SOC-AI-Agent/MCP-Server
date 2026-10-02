@@ -1,12 +1,16 @@
 """
 What this service will and will not run.
 
-The backend writes the SPL (Backend: modules/enrichment/spl.ts) and sends it to
-/query. It is built there from a plan, with every value quoted and every name
-checked, but this service does not take that on trust: `check_query` refuses anything
-that is not a read-only search over an allowed index, whoever wrote it. The same rules,
-checked twice — a bug in one place, or a caller that is not the backend, should not be
-enough to run `| delete`.
+Two checks, for two callers:
+
+- `check_readonly`, for `splunk_run_query`: SPL that Text-to-SPL wrote, so the whole
+  read-only language is allowed and a denylist refuses what writes, deletes, sends
+  data out or executes — in subsearches too. The backend runs the same list
+  (Backend: modules/enrichment/spl-guard.ts) before it sends anything.
+- `check_query`, for `POST /query`: a strict allowlist for SPL a person sends by hand.
+
+Neither takes its caller on trust — a bug in one place, or a caller that is not the
+backend, should not be enough to run `| delete`.
 
 The quoting helpers below are what /catalog and the connection check use to build the
 few searches this service writes for itself.
@@ -101,6 +105,61 @@ _INDEX_TERM = re.compile(r'\bindex\s*=\s*"((?:[^"\\]|\\.)*)"')
 _QUOTED_INDEX_TERM = re.compile(r'\bindex\s*=\s*""')
 # Any other way of naming an index: `index=main`, `index=*`, `index IN (…)`, `index!=…`.
 _OTHER_INDEX_TERM = re.compile(r"\bindex\s*(?:!=|<=|>=|=|<|>|\s+IN\b|\s+NOT\b)", re.IGNORECASE)
+
+
+# What a generated search may not do. A denylist, unlike ALLOWED_COMMANDS above:
+# SPL written by Splunk AI Assistant uses the whole read-only language (table, eval,
+# where, dedup, timechart, ...), and refusing all of that would refuse most of what
+# it writes. These are the commands that write, delete, send data out or execute:
+# Splunk's own list of risky commands (SPL safeguards), plus summaryindex (collect's
+# alias), outputtext, rest, crawl and DB Connect's dbxquery/dbxoutput. Splunk's
+# safeguard is only a warning in Splunk Web; a search sent over the API gets no such
+# check, hence this.
+# https://help.splunk.com/en/splunk-cloud-platform/administer/manage-users-and-security/10.5.2605/best-practices-for-splunk-platform-security/spl-safeguards-for-risky-commands
+# The backend (Backend: modules/enrichment/spl-guard.ts) keeps the same list.
+FORBIDDEN_COMMANDS = frozenset({
+    "delete", "collect", "mcollect", "meventcollect", "tscollect", "summaryindex",
+    "outputlookup", "outputcsv", "outputtext", "sendemail", "sendalert", "script",
+    "run", "runshellscript", "map", "dump", "rest", "dbxquery", "dbxoutput", "crawl",
+})
+_ANY_INDEX_TERM = re.compile(r'\bindex\s*=\s*"?([^\s"|)\]]+)"?', re.IGNORECASE)
+
+
+def check_readonly(query: object) -> str:
+    """
+    Refuse a generated search that writes, deletes, sends data out or executes, or
+    that reads an index outside SPLUNK_ALLOWED_INDEXES (when one is set).
+
+    For SPL that came from Text-to-SPL rather than from the backend's own plans. Every
+    command is checked, including those inside a subsearch; a macro is refused because
+    what it expands to cannot be seen from here.
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise QueryError("query is required")
+    query = query.strip()
+    if len(query) > MAX_QUERY_LEN:
+        raise QueryError(f"query too long (max {MAX_QUERY_LEN} chars)")
+    if "\x00" in query:
+        raise QueryError("query may not contain null bytes")
+
+    bare = _QUOTED.sub('""', query)
+    if '"' in bare.replace('""', ""):
+        raise QueryError("query has an unbalanced quote")
+    if "`" in bare:
+        raise QueryError("macros are not allowed: what they expand to cannot be checked")
+
+    for segment in re.split(r"[|\[]", bare):
+        match = _COMMAND.match(segment)
+        if match and match.group(1).lower() in FORBIDDEN_COMMANDS:
+            raise QueryError(f"command {match.group(1).lower()!r} is not allowed in a read-only search")
+
+    if settings.allowed_indexes and not settings.index_restriction_disabled:
+        for name in _ANY_INDEX_TERM.findall(query):
+            if "*" in name or name not in settings.allowed_indexes:
+                raise QueryError(
+                    f"index {name!r} is not allowed; permitted: {', '.join(settings.allowed_indexes)}"
+                )
+    return query
 
 
 def check_query(query: object) -> str:

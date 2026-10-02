@@ -1,4 +1,0 @@
-# The scripts in this folder talk to Splunk and the services over plain HTTP and
-# read JSON, all of which the standard library covers. Nothing to install —
-# the file exists so `pip install -r` in the setup line works either way, and
-# so there is somewhere obvious to put a dependency if one ever earns its place.
