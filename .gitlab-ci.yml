@@ -1,7 +1,7 @@
 # MCP-Server — soc-mcp-splunk, Splunk over MCP, for development.
 #
 # Not deployed. In production the backend talks to Splunk's own MCP Server app
-# directly (Splunk/README.md, "Production"), so this pipeline only builds the
+# directly (Backend/docs/splunk-mcp.md), so this pipeline only builds the
 # image and runs the tests. The data catalogue, its scripts and the
 # export_catalog job moved to the Backend repo (Backend/docs/splunk-catalog.md).
 #

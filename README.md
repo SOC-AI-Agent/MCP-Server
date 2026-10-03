@@ -3,9 +3,9 @@
 `soc-mcp-splunk`: Splunk over MCP, for development. The backend sends each stage-2
 requirement to Splunk as text over MCP — `saia_generate_spl` (Text-to-SPL) writes
 the search, `splunk_run_query` runs it — and this service answers both in
-`SPLUNK_MODE=mock` from a fixed set of events. In production the backend points at
+`SPLUNK_MODE=mock` from a fixed set of events. Against a real Splunk the backend points at
 **Splunk's own MCP Server app** instead: see
-[Splunk/README.md — Production: connecting to Splunk](Splunk/README.md#production-connecting-to-splunk).
+[Backend/docs/splunk-mcp.md](../Backend/docs/splunk-mcp.md).
 
 | Service | Port | What |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ Keep `SPLUNK_VERIFY_SSL=true` unless it is a self-signed lab Splunk.
 
 The production backend does not go through this service at all — it talks to
 Splunk's MCP Server app directly, and what that needs (apps, role, token, network,
-CA) is in [Splunk/README.md](Splunk/README.md#production-connecting-to-splunk).
+CA) is in [Backend/docs/splunk-mcp.md](../Backend/docs/splunk-mcp.md).
 
 ## Running the whole stack
 
