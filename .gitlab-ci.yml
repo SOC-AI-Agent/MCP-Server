@@ -15,6 +15,8 @@ stages:
 build_image:
   stage: build
   image: docker:latest
+  tags:
+    - test
   # A shared runner has no Docker daemon of its own, so one is started alongside.
   services:
     - docker:dind
@@ -29,6 +31,8 @@ build_image:
 code_test:
   stage: test
   image: python:3.12
+  tags:
+    - test
   script:
     - pip install -q -r Splunk/requirements.txt
     # Imported, not just compiled. A missing dependency, or a route function
