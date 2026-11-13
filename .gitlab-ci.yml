@@ -12,19 +12,43 @@ stages:
   - build
   - test
 
+# The office proxy, the runner host's only way to the internet. A CI/CD
+# variable of the same name overrides this; an empty one turns the proxy off.
+variables:
+  BUILD_PROXY: "http://192.168.137.120:8080"
+
+# ── Reusable: the office proxy ──────────────────────────────────────────────
+#
+# Without it apt, npm, pip and prisma time out on the runner host ("Unable to
+# locate package"). Exported for the npm/pip a job runs itself, and handed to
+# `docker build` / `docker compose build` as PROXY_ARGS: a build does not
+# inherit the job's environment. These are Docker's predefined proxy build
+# args — no ARG line needed in any Dockerfile, and they stay out of the image's
+# history. Both spellings, because apt reads only the lowercase ones. Set inside
+# the script, after the checkout, so `git clone` never goes through the proxy.
+.proxy: &proxy |
+  p="${BUILD_PROXY:-}"
+  np="localhost,127.0.0.1"
+  export http_proxy="$p" https_proxy="$p" HTTP_PROXY="$p" HTTPS_PROXY="$p" \
+         no_proxy="$np" NO_PROXY="$np"
+  PROXY_ARGS="--build-arg http_proxy=$p --build-arg https_proxy=$p --build-arg HTTP_PROXY=$p --build-arg HTTPS_PROXY=$p --build-arg no_proxy=$np --build-arg NO_PROXY=$np"
+  if [ -n "$p" ]; then echo "proxy: on"; else echo "proxy: off (BUILD_PROXY is empty)"; fi
+
 build_image:
   stage: build
   image: docker:latest
   tags:
-    - test
-  # A shared runner has no Docker daemon of its own, so one is started alongside.
-  services:
-    - docker:dind
+    - llm
+  # Builds on the runner host's own Docker daemon, through the socket the llm
+  # runner mounts — no docker:dind. One fixed tag, overwritten each run: the
+  # host is the production machine, and an image per commit would pile up on
+  # its disk.
   variables:
-    DOCKER_HOST: tcp://docker:2375
+    DOCKER_HOST: unix:///var/run/docker.sock
     DOCKER_TLS_CERTDIR: ""
   script:
-    - docker build -t soc-mcp-splunk:${CI_COMMIT_SHORT_SHA} ./Splunk
+    - *proxy
+    - docker build $PROXY_ARGS -t soc-mcp-splunk:ci ./Splunk
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
@@ -32,8 +56,9 @@ code_test:
   stage: test
   image: python:3.12
   tags:
-    - test
+    - llm
   script:
+    - *proxy
     - pip install -q -r Splunk/requirements.txt
     # Imported, not just compiled. A missing dependency, or a route function
     # shadowing the module it imports, only shows up when the module runs —
