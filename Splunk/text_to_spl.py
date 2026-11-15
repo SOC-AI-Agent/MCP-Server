@@ -32,8 +32,9 @@ MOCK_INDEX = "main"
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _HASH = re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b", re.IGNORECASE)
-# \b after the key, so `user_agent: …` is not read as a user called "_agent".
-_USER = re.compile(r"\buser(?:name)?\b\s*[=:]?\s*\"?([A-Za-z0-9_.\-@\\]{2,64})", re.IGNORECASE)
+# Require an explicit `=` or `:` so English prose like "user associated" is not
+# read as a user called "associated".
+_USER = re.compile(r"\buser(?:name)?\b\s*[=:]\s*\"?([A-Za-z0-9_.\-@\\]{2,64})", re.IGNORECASE)
 _INDEX_HINT = re.compile(r"\bindex\s*[=:]?\s*\"?([A-Za-z0-9_\-]+)", re.IGNORECASE)
 _SOURCETYPE_HINT = re.compile(r"\bsourcetype\s*[=:]?\s*\"?([A-Za-z0-9_:\-]+)", re.IGNORECASE)
 _EARLIEST_HINT = re.compile(r"\bearliest\s*[=:]?\s*\"?([^\s\",)]+)", re.IGNORECASE)
@@ -118,6 +119,24 @@ def _stats(prompt: str) -> str | None:
     return out if span else f"{out} | head 20"
 
 
+# Fields that store a full path (e.g. `%systemroot%\PKSnPlKq.exe` or `C:\Windows\PKSnPlKq.exe`)
+# when the alert indicator is just the filename (`PKSnPlKq.exe`), or a path without query string.
+_PATH_FIELDS = {"Image", "ParentImage", "Service_File_Name"}
+
+
+def _match_expr(field: str, value: str) -> str:
+    if field == "SHA256" and len(value) == 32 and re.fullmatch(r"[0-9A-Fa-f]{32}", value):
+        return f"Hashes={_quote('*' + value + '*')}"
+    if field == "Image":
+        val = f"*{value}" if ("\\" not in value and "/" not in value and not value.startswith("*")) else value
+        return f"Image={_quote(val)} OR ParentImage={_quote(val)}"
+    if field in _PATH_FIELDS and "\\" not in value and "/" not in value and not value.startswith("*"):
+        return f"{field}={_quote('*' + value)}"
+    if field == "uri_path" and "?" in value:
+        return f'uri={_quote(value)} OR uri_path={_quote(value.split("?", 1)[0])}'
+    return f"{field}={_quote(value)}"
+
+
 def generate(prompt: str, mock: bool = False) -> dict:
     """The SPL for a request, and how it was arrived at.
 
@@ -130,15 +149,15 @@ def generate(prompt: str, mock: bool = False) -> dict:
     filters = _FILTER.findall(filter_line.group(1)) if filter_line else []
     stats = None if mock else _stats(prompt)
 
-    # Values with no field named for them: searched as bare terms, any of them.
-    # The structured lines are left out of the scan — their values are searched in
-    # their fields, and "is in user or srcuser" is not a user called "or".
-    scan = prompt if mock else _SUMMARY_LINE.sub("", _FILTERS_LINE.sub("", _HINTS_LINE.sub("", prompt)))
+    # Values with no field named for them: searched as bare terms only when the
+    # request carries no structured fieldHints or filters (or in mock mode).
     values: list[str] = []
-    for found in (_IPV4.findall(scan) + _HASH.findall(scan)
-                  + [m.group(1).rstrip(".,;:") for m in _USER.finditer(scan)]):
-        if found not in values and found not in placed:
-            values.append(found)
+    if mock or (not placed and not filters):
+        scan = prompt if mock else _SUMMARY_LINE.sub("", _FILTERS_LINE.sub("", _HINTS_LINE.sub("", prompt)))
+        for found in (_IPV4.findall(scan) + _HASH.findall(scan)
+                      + [m.group(1).rstrip(".,;:") for m in _USER.finditer(scan)]):
+            if found not in values and found not in placed:
+                values.append(found)
 
     index = _hint(_INDEX_HINT, prompt, MOCK_INDEX if mock else None)
     sourcetype = _hint(_SOURCETYPE_HINT, prompt, None)
@@ -152,8 +171,9 @@ def generate(prompt: str, mock: bool = False) -> dict:
         parts.append(f'sourcetype="{sourcetype}"')
     # Every placed value has to be there: details narrow a search, they do not widen it.
     for value, fields in placed.items():
-        alternatives = " OR ".join(f"{f}={_quote(value)}" for f in fields)
-        parts.append(f"({alternatives})" if len(fields) > 1 else alternatives)
+        exprs = [_match_expr(f, value) for f in fields]
+        alternatives = " OR ".join(exprs)
+        parts.append(f"({alternatives})" if len(exprs) > 1 or " OR " in alternatives else alternatives)
     parts.extend(f"{f}={_quote(v)}" for f, v in filters)
     if values:
         # Mock mode's search compares a term as written, so it is left unescaped there.
