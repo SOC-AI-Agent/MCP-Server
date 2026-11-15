@@ -145,10 +145,47 @@ def test_live_mode_without_the_assistant_writes_spl_from_a_template(mcp):
     )
     assert not failed
     assert generated["mock"] is False and generated["generator"] == "template"
+    # In the fields it was placed in: as a bare term, "what did it reach" (srcip)
+    # and "what reached it" (dstip) would be one search.
     assert generated["spl"] == (
-        'search index="main" "10.1.100.11" earliest="-24h" latest="now" '
+        'search index="main" (srcip="10.1.100.11" OR dstip="10.1.100.11") earliest="-24h" latest="now" '
         "| stats count by srcip, dstip | sort - count | head 20"
     )
+
+
+# The structured lines lookup.build_prompt writes, and the SPL each becomes.
+@pytest.mark.parametrize("lines, spl", [
+    # A value that is no IP, hash or user is still searched, and a backslash is doubled.
+    (["Who ran it.", "Field names in this data: CORP\\bob is in User. Use these field names."],
+     'search index="main" User="CORP\\\\bob" earliest="-24h" latest="now" | head 50 | fields *'),
+    # Two details narrow: both have to be there. Neither is searched again as a bare term.
+    (["Logons.", "Details from the alert:", "- user: bob", "- source: 10.1.100.11",
+      "Field names in this data: bob is in Account_Name; 10.1.100.11 is in src or dest. Use these field names."],
+     'search index="main" Account_Name="bob" (src="10.1.100.11" OR dest="10.1.100.11") '
+     'earliest="-24h" latest="now" | head 50 | fields *'),
+    # A playbook's own filters.
+    (["Installed services.", 'Only events where EventCode="7045" and LogName="System".'],
+     'search index="main" EventCode="7045" LogName="System" earliest="-24h" latest="now" | head 50 | fields *'),
+    # A grouped count, in the plan's names for the functions.
+    (["How much.", "Summarise: count, distinct_count(dstip) by action sorted by -count.",
+      "Field names in this data: 10.1.100.11 is in srcip. Use these field names."],
+     'search index="main" srcip="10.1.100.11" earliest="-24h" latest="now" '
+     "| stats count, dc(dstip) by action | sort - count | head 20"),
+    # Per hour: every span is a row, and none is cut off.
+    (["A steady beat.", "Summarise: count per 1h."],
+     'search index="main" earliest="-24h" latest="now" | bin _time span=1h | stats count by _time'),
+    # A summary this cannot write is not guessed at: the events, as before.
+    (["Odd.", "Summarise: percentile(bytes)."],
+     'search index="main" earliest="-24h" latest="now" | head 50 | fields *'),
+    # No field named for a value: a bare term, as it always was.
+    (["Anything about 10.1.100.11."],
+     'search index="main" "10.1.100.11" earliest="-24h" latest="now" | head 50 | fields *'),
+])
+def test_the_template_reads_the_lines_the_prompt_is_built_from(mcp, lines, spl):
+    prompt = "\n".join([lines[0], "Search index=main", *lines[1:], "Time range: earliest=-24h latest=now"])
+    failed, generated = tool(mcp(**LIVE), "saia_generate_spl", prompt=prompt)
+    assert not failed
+    assert generated["spl"] == spl
 
 
 def test_the_live_template_names_no_index_the_request_did_not(mcp):
