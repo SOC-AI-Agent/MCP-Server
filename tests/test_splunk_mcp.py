@@ -306,6 +306,19 @@ def test_how_often_an_alert_fired_is_asked_of_the_alert_index(mcp):
     assert "Search index=main" not in got["prompt"]
 
 
+def test_frequency_of_errors_cleanly_when_alert_index_unavailable(mcp):
+    _, got = tool(mcp(**LIVE, SPLUNK_ALERT_INDEX="notable"), "splunk_text_to_spl",
+                  question={"requirement": "How often has this alert fired", "index": "main",
+                            "frequencyOf": "Excessive DNS Failures"})
+    assert "SPLUNK_ALLOWED_INDEXES" in got["error"]
+    assert "refused" not in got
+
+    _, unset = tool(mcp(**LIVE, SPLUNK_ALERT_INDEX=""), "splunk_text_to_spl",
+                    question={"requirement": "How often has this alert fired", "index": "main",
+                              "frequencyOf": "Excessive DNS Failures"})
+    assert "SPLUNK_ALERT_INDEX is unset" in unset["error"]
+
+
 def test_a_playbook_search_carries_its_filters_and_its_count(mcp):
     _, got = tool(mcp(), "splunk_text_to_spl", question={
         "requirement": "Blocked traffic by destination",

@@ -120,6 +120,20 @@ def _scope(index: str | None, sourcetype: str | None) -> str:
     return " ".join(p for p in (index and f"index={index}", sourcetype and f"sourcetype={sourcetype}") if p)
 
 
+def alert_frequency_error() -> str | None:
+    """Why an alert-frequency query (`frequencyOf`) cannot run on this Splunk, or None."""
+    alert_index = settings.SPLUNK_ALERT_INDEX.strip()
+    if not alert_index:
+        return "alert frequency check is disabled (SPLUNK_ALERT_INDEX is unset)"
+    if not settings.mock and not settings.index_restriction_disabled:
+        if alert_index not in settings.allowed_indexes:
+            return (
+                f"alert frequency check is unavailable: SPLUNK_ALERT_INDEX ({alert_index!r}) "
+                f"is not in SPLUNK_ALLOWED_INDEXES ({', '.join(settings.allowed_indexes)})"
+            )
+    return None
+
+
 def build_prompt(q: Question) -> tuple[str, str, str]:
     """
     The prompt Text-to-SPL gets — the question, the details from the alert it is
@@ -149,10 +163,11 @@ def build_prompt(q: Question) -> tuple[str, str, str]:
     if details:
         lines.append("Details from the alert:")
         lines.extend(f"- {key}: {value}" for key, value in details)
-    if q.frequencyOf:
+    alert_index = settings.SPLUNK_ALERT_INDEX.strip()
+    if q.frequencyOf and alert_index:
         # The alert's own index is the wrong place to count alerts in.
         lines.append(
-            f"Fired alerts are in index={settings.SPLUNK_ALERT_INDEX}; "
+            f"Fired alerts are in index={alert_index}; "
             f"the alert name is in the field {settings.SPLUNK_ALERT_NAME_FIELD}."
         )
     elif where:

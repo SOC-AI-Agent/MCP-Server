@@ -144,6 +144,10 @@ async def _draft(question: lookup.Question, written: str | None = None) -> dict:
     {prompt, generated, spl} or {prompt, generated?, refused|error}, with who wrote it."""
     _question(question)
     prompt, earliest, latest = lookup.build_prompt(question)
+    if question.frequencyOf:
+        freq_err = lookup.alert_frequency_error()
+        if freq_err:
+            return {"prompt": prompt, "written_by": "config", "error": freq_err}
     if written is not None:
         # An agent's reply, as it came: the SPL is found in it, never taken on trust.
         draft = {"prompt": prompt, "written_by": "caller"}

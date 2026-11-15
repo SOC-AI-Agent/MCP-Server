@@ -219,6 +219,7 @@ def main() -> None:
         # The container's certificate is self-signed. Never for the company's Splunk.
         "SPLUNK_VERIFY_SSL": "false",
         # Not Splunk ES: no notable index. Nothing fires alerts here.
+        "SPLUNK_ALERT_INDEX": "",
         "SPLUNK_SAIA_MCP_URL": "",
     }
     target = MCP_SERVER / ".env"
