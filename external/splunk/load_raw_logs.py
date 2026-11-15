@@ -25,11 +25,13 @@ from __future__ import annotations
 import csv
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 from setup import HERE, INDEX, MCP_SERVER, Splunk, read_env
 
 LOGS = MCP_SERVER / "Splunk" / "Raw logs"
+LOGS_ZIP = MCP_SERVER / "Splunk" / "Raw_logs.zip"
 HOST = "KBTG-Bootcamp"
 APP = "/servicesNS/nobody/search"
 
@@ -124,6 +126,11 @@ def main() -> None:
         define(splunk, "transforms", name, settings)
     for name, settings in PROPS.items():
         define(splunk, "props", name, settings)
+
+    if LOGS_ZIP.exists() and any(not (LOGS / f).exists() for f, _, _ in FILES):
+        with zipfile.ZipFile(LOGS_ZIP) as zf:
+            zf.extractall(LOGS_ZIP.parent)
+        print(f"extracted {LOGS_ZIP.name} -> {LOGS}")
 
     for filename, sourcetype, host in FILES:
         path = LOGS / filename
