@@ -1,8 +1,8 @@
 """Loads the connector with a throwaway environment.
 
 `connector("Splunk")` puts it on the path, imports its server with a throwaway
-environment, and takes it all back out afterwards. (There used to be three; the
-backend now calls ThreatQ and Confluence directly.)
+environment, and takes it all back out afterwards. Two connectors, Splunk and
+Confluence, each with a config.py and a server.py of its own.
 
 Nothing here contacts a platform. The platform URLs point at a closed local
 port, so anything that does reach for one fails at once instead of waiting on a
@@ -18,7 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parent.parent
-CONNECTORS = ("Splunk",)
+CONNECTORS = ("Splunk", "Confluence")
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -28,6 +28,7 @@ CLOSED = "http://127.0.0.1:9"
 # assert that none of them ever appears in an answer.
 SECRETS = {
     "Splunk": "splunk-secret-value",
+    "Confluence": "confluence-secret-value",
 }
 
 ENV = {
@@ -36,6 +37,16 @@ ENV = {
         "SPLUNK_TOKEN": SECRETS["Splunk"],
         "SPLUNK_ALLOWED_INDEXES": "main",
         "SPLUNK_BASE_URL": CLOSED,
+    },
+    "Confluence": {
+        "CONFLUENCE_MCP_AUTH_TOKEN": TOKEN,
+        "CONFLUENCE_BASE_URL": CLOSED,
+        "CONFLUENCE_SPACE_KEY": "SOC",
+        "CONFLUENCE_API_TOKEN": SECRETS["Confluence"],
+        # Whatever the developer's shell has: a test never goes through a proxy.
+        "CONFLUENCE_PROXY": "",
+        "CONFLUENCE_EMAIL": "",
+        "CONFLUENCE_API": "auto",
     },
 }
 

@@ -1,19 +1,35 @@
 """
-Splunk for the backend, over MCP — shaped like Splunk's own MCP Server.
+Splunk for the backend, over MCP.
 
-The backend's Splunk stage sends each requirement, as text, to `saia_generate_spl`
-(Text-to-SPL), and runs the SPL that comes back with `splunk_run_query`. Those are
-the names Splunk's MCP Server app gives these tools, served at the path it serves
-them (/services/mcp), so moving the backend to real Splunk is a change of URL and
-token, not of code — see README "Production".
+The backend's Splunk stage sends each requirement stage 1 stored — the question, the
+details from the alert, where to look — to one tool, `splunk_lookup`, and gets back
+the SPL that ran and its rows. Everything Splunk-shaped happens here (lookup.py): the
+prompt, Text-to-SPL, the read-only check, the search, trimming the rows.
+`splunk_text_to_spl` is the first half alone, with nothing searched.
 
-SPLUNK_MODE=mock answers both tools from mock.py. live runs splunk_run_query against
-SPLUNK_BASE_URL; Text-to-SPL itself only exists in Splunk. Either way a search is
-checked before it runs (spl.check_readonly): nothing that writes, deletes, sends or
-executes, and only allowed indexes.
+Who writes the SPL is the caller's choice. Left to this service, Text-to-SPL is a
+template or Splunk AI Assistant (below). Or the caller has an agent of its own write
+it: `splunk_prompt` gives the text to show that agent, and its reply goes back in as
+the `spl` argument of the other two tools, to be read, checked and run like any other
+SPL. No model is called from here either way.
+
+Under them are the two tools Splunk's own MCP Server app publishes, by the same names
+at the same path (/services/mcp): `saia_generate_spl` (Text-to-SPL) and
+`splunk_run_query`.
+
+Where the SPL comes from and where it runs:
+
+  SPLUNK_MODE=mock   a template writes it; a fixed set of events answers (mock.py).
+  SPLUNK_MODE=live   it runs against SPLUNK_BASE_URL — the Splunk container in
+                     external/splunk, or the company's. A template writes it
+                     (text_to_spl.py), or Splunk AI Assistant for SPL does when
+                     SPLUNK_SAIA_MCP_URL names a Splunk MCP server (saia.py).
+
+Either way a search is checked before it runs (spl.check_readonly): nothing that
+writes, deletes, sends or executes, and only allowed indexes.
 
 No model runs here and no agent calls these tools: the backend calls them, one
-requirement at a time. The plain routes stay — POST /query (SPL the backend wrote,
+requirement at a time. The plain routes stay — POST /query (SPL an operator wrote,
 under the stricter spl.check_query), the operator's /catalog and the connection
 check.
 """
@@ -28,8 +44,11 @@ from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+import lookup
 import mock
+import saia
 import spl
+import text_to_spl
 from auth import BearerAuthMiddleware
 from config import settings, validate_startup
 from splunk_api import SplunkError, splunk
@@ -51,34 +70,27 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorld
 MAX_EVENTS = 1000
 
 
-@mcp.tool(annotations=_READ_ONLY)
-async def saia_generate_spl(prompt: str) -> dict:
-    """Generate SPL from a natural-language search request (Splunk AI Assistant for SPL)."""
-    if not prompt or not prompt.strip():
-        raise ToolError("prompt is required")
-    if not settings.mock:
-        raise ToolError(
-            "Text-to-SPL is Splunk AI Assistant for SPL, served by Splunk's own MCP server. "
-            "This connector only imitates it in SPLUNK_MODE=mock; point the backend's "
-            "SPLUNK_MCP_URL at https://<splunk>:8089/services/mcp instead."
-        )
-    generated = mock.generate_spl(prompt)
-    logger.info("saia_generate_spl (mock) -> %s", generated["spl"])
-    return generated
+async def _text_to_spl(prompt: str) -> dict:
+    """Text-to-SPL, by whoever does it in this mode. Raises ToolError."""
+    if settings.mock:
+        return mock.generate_spl(prompt)
+    if not settings.saia:
+        return text_to_spl.generate(prompt)
+    try:
+        answered = await saia.generate(prompt)
+    except saia.SaiaError as exc:
+        raise ToolError(str(exc)) from exc
+    return answered if isinstance(answered, dict) else {"spl": lookup.spl_of(answered), "text": str(answered)}
 
 
-@mcp.tool(annotations=_READ_ONLY)
-async def splunk_run_query(query: str, workload_pool: str | None = None) -> dict:
-    """Execute a Splunk search query (SPL) and return the results.
-
-    workload_pool is accepted for compatibility with Splunk's MCP Server and unused here.
-    """
+async def _run(query: str) -> tuple[str, list[dict], int]:
+    """Check a search and run it: (the SPL that ran, its rows, the row limit). Raises ToolError."""
     try:
         checked = spl.check_readonly(query)
     except spl.QueryError as exc:
         raise ToolError(str(exc)) from exc
 
-    limit = min(MAX_EVENTS, settings.SPLUNK_MAX_COUNT)
+    limit = _limit()
     if settings.mock:
         rows = mock.run_query(checked, limit)
     else:
@@ -88,8 +100,143 @@ async def splunk_run_query(query: str, workload_pool: str | None = None) -> dict
             rows = await splunk.search(search, "-24h", "now", limit)
         except SplunkError as exc:
             raise ToolError(str(exc)) from exc
+    return checked, rows, limit
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def saia_generate_spl(prompt: str) -> dict:
+    """Generate SPL from a natural-language search request (Splunk AI Assistant for SPL)."""
+    if not prompt or not prompt.strip():
+        raise ToolError("prompt is required")
+    generated = await _text_to_spl(prompt)
+    logger.info("saia_generate_spl (%s) -> %s", settings.SPLUNK_MODE, generated.get("spl"))
+    return generated
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def splunk_run_query(query: str, workload_pool: str | None = None) -> dict:
+    """Execute a Splunk search query (SPL) and return the results.
+
+    workload_pool is accepted for compatibility with Splunk's MCP Server and unused here.
+    """
+    checked, rows, limit = await _run(query)
     logger.info("splunk_run_query (%s) -> %d row(s): %s", settings.SPLUNK_MODE, len(rows), checked)
     return {"results": rows, "count": len(rows), "limit": limit, "mock": settings.mock}
+
+
+# ── The backend's tools ────────────────────────────────────────────────────────
+# One requirement in, as stage 1 stored it. A requirement that cannot be answered
+# is an answer too: `error` says why and `prompt` what was asked, so the backend
+# can keep it beside the ones that worked. Only a question that cannot be read at
+# all is a tool error.
+
+def _limit() -> int:
+    return min(MAX_EVENTS, settings.SPLUNK_MAX_COUNT)
+
+
+def _question(question: lookup.Question) -> None:
+    if not question.requirement.strip():
+        raise ToolError("question.requirement is required")
+
+
+async def _draft(question: lookup.Question, written: str | None = None) -> dict:
+    """Text-to-SPL — or the SPL the caller had written — and the check.
+    {prompt, generated, spl} or {prompt, generated?, refused|error}, with who wrote it."""
+    _question(question)
+    prompt, earliest, latest = lookup.build_prompt(question)
+    if written is not None:
+        # An agent's reply, as it came: the SPL is found in it, never taken on trust.
+        draft = {"prompt": prompt, "written_by": "caller"}
+        generated = lookup.spl_of(written)
+        if not generated:
+            return {**draft, "error": "no SPL in what was written for this requirement: "
+                                      f"{' '.join(written.split())[:200] or '(empty)'}"}
+    else:
+        draft = {"prompt": prompt, "written_by": "assistant" if settings.saia else "template"}
+        try:
+            generated = lookup.spl_of(await _text_to_spl(prompt))
+        except ToolError as exc:
+            return {**draft, "error": str(exc)}
+        if not generated:
+            return {**draft, "error": f"Text-to-SPL returned no SPL for: {prompt}"}
+    try:
+        checked = spl.check_readonly(
+            lookup.with_all_fields(lookup.with_time_window(generated, earliest, latest), _limit())
+        )
+    except spl.QueryError as exc:
+        return {**draft, "generated": generated, "refused": str(exc)}
+    return {**draft, "generated": generated, "spl": checked}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def splunk_prompt(question: lookup.Question) -> dict:
+    """What to show an agent that writes the SPL for one requirement. Nothing is run.
+
+    Returns prompt (the request: the requirement, the details, where to search, the
+    time range) and writer_prompt (the same, followed by the answer format). Send
+    writer_prompt to the agent and pass its reply as `spl` to splunk_lookup or
+    splunk_text_to_spl.
+    """
+    _question(question)
+    prompt, earliest, latest = lookup.build_prompt(question)
+    return {
+        "prompt": prompt,
+        "writer_prompt": lookup.writer_prompt(prompt, _limit()),
+        "earliest": earliest,
+        "latest": latest,
+    }
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def splunk_text_to_spl(question: lookup.Question, spl: str | None = None) -> dict:
+    """The SPL for one requirement, and whether it would be run. Nothing is searched.
+
+    Returns prompt (the text sent to Text-to-SPL), generated (the SPL as written) and
+    either spl (what would run, with the time window added) or refused (why not).
+    Pass `spl` — an agent's reply to splunk_prompt, as it came — to have that checked
+    instead of this service's own Text-to-SPL.
+    """
+    draft = await _draft(question, spl)
+    logger.info("splunk_text_to_spl (%s, %s) -> %s", settings.SPLUNK_MODE, draft["written_by"],
+                draft.get("spl") or draft.get("refused") or draft.get("error"))
+    return {**draft, "searched": False, "mock": settings.mock}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def splunk_lookup(question: lookup.Question, spl: str | None = None) -> dict:
+    """Answer one requirement from Splunk: write the SPL, check it, run it.
+
+    Returns prompt, spl (what ran), rows (trimmed for a small model), count, capped,
+    limit, mock and answer (the rows as text). A requirement that could not be
+    answered returns prompt and error instead. Pass `spl` — an agent's reply to
+    splunk_prompt, as it came — to have that checked and run instead of this
+    service's own Text-to-SPL.
+    """
+    draft = await _draft(question, spl)
+    if "spl" not in draft:
+        reason = draft.get("error") or f"the generated SPL was refused: {draft['refused']}"
+        return {**draft, "error": reason, "mock": settings.mock}
+    try:
+        ran, found, limit = await _run(draft["spl"])
+    except ToolError as exc:
+        return {**draft, "error": str(exc), "mock": settings.mock}
+
+    rows = [lookup.trim_row(r) for r in found[:limit]]
+    capped = len(found) >= limit
+    logger.info("splunk_lookup (%s, %s) -> %d row(s): %s",
+                settings.SPLUNK_MODE, draft["written_by"], len(rows), ran)
+    return {
+        "prompt": draft["prompt"],
+        "written_by": draft["written_by"],
+        "generated": draft["generated"],
+        "spl": ran,
+        "rows": rows,
+        "count": len(rows),
+        "capped": capped,
+        "limit": limit,
+        "mock": settings.mock,
+        "answer": lookup.render(ran, rows, capped, limit, settings.mock),
+    }
 
 
 # ── Plain routes ───────────────────────────────────────────────────────────────
@@ -295,6 +442,8 @@ if settings.mock:
     )
 else:
     logger.info(
-        "%s ready on :%d — live, indexes=%s",
-        settings.MCP_SERVER_NAME, settings.MCP_PORT, settings.SPLUNK_ALLOWED_INDEXES,
+        "%s ready on :%d — live, splunk=%s indexes=%s text-to-spl=%s",
+        settings.MCP_SERVER_NAME, settings.MCP_PORT, settings.SPLUNK_BASE_URL,
+        settings.SPLUNK_ALLOWED_INDEXES,
+        f"Splunk AI Assistant at {saia.endpoint()}" if settings.saia else "template",
     )

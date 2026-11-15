@@ -1,0 +1,61 @@
+# soc-splunk — a Splunk Enterprise container for soc-mcp-splunk to search.
+#
+# "External" the way the company's Splunk is: its own stack, reached by
+# soc-mcp-splunk at SPLUNK_BASE_URL, over soc-network. For development and
+# demos — live mode with a real Splunk and no company network.
+#
+#   cp .env.example .env            # SPLUNK_PASSWORD
+#   docker compose up -d            # first start takes a few minutes
+#   python3 setup.py                # service user, token, index, sample events
+#
+# setup.py prints what to put in MCP-Server/.env (or writes it, --write-env).
+# README.md here has the rest.
+#
+# The image is amd64 only: on Apple Silicon it runs emulated (enable Rosetta in
+# Docker Desktop), and starts slower. It runs on a trial licence that becomes
+# the Free licence after 60 days; token authentication, which setup.py uses,
+# needs the trial or an Enterprise licence — recreate the volumes to start over.
+
+# Not the directory's name: `splunk` would be anyone's project.
+name: soc-splunk
+
+services:
+  soc-splunk:
+    image: splunk/splunk:${SPLUNK_IMAGE_TAG:-latest}
+    platform: linux/amd64
+    container_name: soc-splunk
+    hostname: soc-splunk
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      # Splunk 9.4.3+/10 will not start without this. Setting it accepts the
+      # Splunk General Terms: https://www.splunk.com/en_us/legal/splunk-general-terms.html
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:?set SPLUNK_PASSWORD in external/splunk/.env}
+    ports:
+      # This machine only. Web UI (admin / SPLUNK_PASSWORD) and the management
+      # API setup.py talks to. soc-mcp-splunk does not use these: it reaches
+      # https://soc-splunk:8089 over soc-network.
+      - "127.0.0.1:${SPLUNK_WEB_PORT:-8000}:8000"
+      - "127.0.0.1:${SPLUNK_MGMT_PORT:-8089}:8089"
+    volumes:
+      - soc-splunk-etc:/opt/splunk/etc
+      - soc-splunk-var:/opt/splunk/var
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -o /dev/null https://localhost:8089/services/server/health/splunkd || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 5m
+    restart: unless-stopped
+    networks: [soc-network]
+
+volumes:
+  soc-splunk-etc:
+  soc-splunk-var:
+
+networks:
+  soc-network:
+    # Shared with soc-mcp-splunk and the rest of the stack; created once, outside
+    # any one project (`docker network create soc-network`).
+    external: true
+    name: soc-network

@@ -13,8 +13,14 @@ answer the questions the requirements agent asks about an alert, and obviously n
 Splunk. Every answer says `mock: true`.
 """
 
+# So setup.py in external/splunk can import this with an older system python3.
+from __future__ import annotations
+
 import re
 from datetime import datetime, timedelta, timezone
+
+import text_to_spl
+from text_to_spl import _IPV4
 
 INDEX = "main"
 SOURCETYPE = "fortigate"
@@ -66,62 +72,9 @@ def _events() -> list[dict]:
 
 # ── Text to SPL ────────────────────────────────────────────────────────────────
 
-_IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-_HASH = re.compile(r"\b(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})\b", re.IGNORECASE)
-# \b after the key, so `user_agent: …` is not read as a user called "_agent".
-_USER = re.compile(r"\buser(?:name)?\b\s*[=:]?\s*\"?([A-Za-z0-9_.\-@\\]{2,64})", re.IGNORECASE)
-_INDEX_HINT = re.compile(r"\bindex\s*[=:]?\s*\"?([A-Za-z0-9_\-]+)", re.IGNORECASE)
-_SOURCETYPE_HINT = re.compile(r"\bsourcetype\s*[=:]?\s*\"?([A-Za-z0-9_:\-]+)", re.IGNORECASE)
-_EARLIEST_HINT = re.compile(r"\bearliest\s*[=:]?\s*\"?([^\s\",)]+)", re.IGNORECASE)
-_LATEST_HINT = re.compile(r"\blatest\s*[=:]?\s*\"?([^\s\",)]+)", re.IGNORECASE)
-# Questions about how much, or with whom, read better as a count than as a list.
-_AGGREGATE = re.compile(
-    r"\b(how many|count|top|most|frequen|which (?:hosts?|address|destinations?|ports?)|"
-    r"talk(?:ed|ing)? to|connect(?:ed|ions?)? to|destinations?|distinct)\b",
-    re.IGNORECASE,
-)
-
-
-def _hint(pattern: re.Pattern, prompt: str, default: str | None) -> str | None:
-    """A value named in the request, without the sentence's punctuation after it."""
-    found = pattern.search(prompt)
-    return found.group(1).rstrip(".,;:") if found else default
-
-
 def generate_spl(prompt: str) -> dict:
     """What `saia_generate_spl` would hand back: the SPL, and how it was arrived at."""
-    values: list[str] = []
-    for found in (_IPV4.findall(prompt) + _HASH.findall(prompt)
-                  + [m.group(1).rstrip(".,;:") for m in _USER.finditer(prompt)]):
-        if found not in values:
-            values.append(found)
-
-    index = _hint(_INDEX_HINT, prompt, INDEX)
-    sourcetype = _hint(_SOURCETYPE_HINT, prompt, None)
-    earliest = _hint(_EARLIEST_HINT, prompt, "-24h")
-    latest = _hint(_LATEST_HINT, prompt, "now")
-
-    parts = [f'search index="{index}"']
-    if sourcetype:
-        parts.append(f'sourcetype="{sourcetype}"')
-    if values:
-        terms = " OR ".join(f'"{v}"' for v in values)
-        parts.append(f"({terms})" if len(values) > 1 else terms)
-    parts.append(f'earliest="{earliest}" latest="{latest}"')
-
-    if _AGGREGATE.search(prompt):
-        tail = "| stats count by srcip, dstip, dstport, action | sort - count | head 20"
-    else:
-        tail = "| table _time, srcip, dstip, dstport, user, action, msg | head 50"
-
-    return {
-        "spl": " ".join(parts) + " " + tail,
-        "explanation": (
-            "MOCK: a template filled with the values found in the request "
-            f"({', '.join(values) or 'none'}), not Splunk AI Assistant for SPL."
-        ),
-        "mock": True,
-    }
+    return text_to_spl.generate(prompt, mock=True)
 
 
 # ── Running SPL ────────────────────────────────────────────────────────────────
@@ -150,7 +103,8 @@ def run_query(query: str, limit: int) -> list[dict]:
         command = command.lower()
         if command == "table" or command == "fields":
             keep = [f.strip() for f in args.replace(",", " ").split() if f.strip()]
-            rows = [{f: r[f] for f in keep if f in r} for r in rows]
+            if "*" not in keep:
+                rows = [{f: r[f] for f in keep if f in r} for r in rows]
         elif command == "stats" and " by " in f" {args} ":
             by = [f.strip() for f in args.split(" by ", 1)[1].replace(",", " ").split()]
             counts: dict[tuple, int] = {}

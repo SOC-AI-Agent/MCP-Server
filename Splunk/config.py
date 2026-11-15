@@ -19,9 +19,10 @@ class Settings(BaseSettings):
 
     # mock: the MCP tools answer from mock.py — Text-to-SPL is a template and the
     #       data is a fixed set of events. Needs no Splunk and no Splunk token.
-    # live: splunk_run_query runs against SPLUNK_BASE_URL. saia_generate_spl has
-    #       no live form here: Text-to-SPL is Splunk AI Assistant, reached through
-    #       Splunk's own MCP server (see README "Production").
+    # live: searches run against SPLUNK_BASE_URL — the Splunk container in
+    #       external/splunk, or the company's. Text-to-SPL is the template
+    #       (text_to_spl.py) unless SPLUNK_SAIA_MCP_URL names a Splunk MCP server
+    #       with Splunk AI Assistant for SPL behind it.
     # Live by default, so a deployment that forgets to choose cannot serve
     # made-up data as if it were Splunk.
     SPLUNK_MODE: str = "live"
@@ -39,10 +40,31 @@ class Settings(BaseSettings):
     # Hard ceiling on rows returned to a caller, whatever it asks for.
     SPLUNK_MAX_COUNT: int = 200
 
+    # Where fired alerts are, and the field holding an alert's name — told to
+    # Text-to-SPL for "how often has this alert fired". Splunk ES defaults; a
+    # plain Splunk install differs.
+    SPLUNK_ALERT_INDEX: str = "notable"
+    SPLUNK_ALERT_NAME_FIELD: str = "search_name"
+
+    # ── Text-to-SPL by Splunk AI Assistant (optional, live only) ────────────
+    # Splunk's own MCP Server app, https://<splunk>:8089/services/mcp. Set: each
+    # request is forwarded to its Text-to-SPL tool. Blank: the template writes
+    # the SPL. A plain Splunk container has no AI Assistant, so blank there.
+    SPLUNK_SAIA_MCP_URL: str = ""
+    # A Splunk token created with audience "mcp". Blank: SPLUNK_TOKEN is sent.
+    SPLUNK_SAIA_MCP_TOKEN: str = ""
+    SPLUNK_SAIA_TOOL: str = "saia_generate_spl"
+    # Which argument of that tool takes the request. Blank: read from its schema.
+    SPLUNK_SAIA_ARG: str = ""
 
     @property
     def mock(self) -> bool:
         return self.SPLUNK_MODE.strip().lower() == "mock"
+
+    @property
+    def saia(self) -> bool:
+        """Text-to-SPL is forwarded to Splunk AI Assistant rather than templated."""
+        return not self.mock and bool(self.SPLUNK_SAIA_MCP_URL.strip())
 
     @property
     def allowed_hosts(self) -> list[str]:

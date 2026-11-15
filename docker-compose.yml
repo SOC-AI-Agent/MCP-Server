@@ -1,14 +1,26 @@
-# soc-mcp-splunk — Splunk over MCP, for development.
+# soc-mcp-splunk — Splunk for the backend, over MCP.
 #
-# An MCP server shaped like Splunk's own MCP Server app (tools saia_generate_spl
-# and splunk_run_query at /services/mcp). In SPLUNK_MODE=mock it answers from a
-# fixed set of events; in production the backend points SPLUNK_MCP_URL at
-# Splunk's own MCP server instead and this is not deployed. See Splunk/README.md.
+# The backend sends each requirement to its splunk_lookup tool; it builds the
+# prompt, has Text-to-SPL write the search, checks it, runs it and returns the
+# rows. SPLUNK_MODE=mock answers from a fixed set of events; live searches the
+# Splunk at SPLUNK_BASE_URL — the container in external/splunk, or the
+# company's. See Splunk/README.md.
 #
-# ThreatQ and Confluence are not here: the backend calls them directly.
+# soc-mcp-confluence — Confluence over MCP: the playbook space, read-only. Only
+# with its profile, so a stack without Confluence settings still comes up:
+#
+#   docker compose --profile confluence up -d --build
+#
+# ThreatQ is not here: the backend calls it directly.
 #
 #   cp .env.example .env    # MCP_AUTH_TOKEN, same value as Backend/.env
 #   docker compose up -d --build
+#
+# With the Splunk container (external/splunk/README.md):
+#
+#   cd external/splunk && cp .env.example .env    # SPLUNK_PASSWORD
+#   docker compose up -d && python3 setup.py --write-env
+#   cd ../.. && docker compose up -d --build
 #
 # Nothing here is reachable from outside the network. The backend joins
 # `soc-network` and addresses it by container name.
@@ -27,6 +39,24 @@ services:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8200/health', timeout=5).status==200 else 1)\""]
       interval: 30s
       timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks: [soc-network]
+
+  soc-mcp-confluence:
+    profiles: [confluence]
+    build:
+      context: ./Confluence
+    container_name: soc-mcp-confluence
+    env_file: [.env]
+    volumes:
+      # The company CA, when Confluence's certificate is signed by one
+      # (SSL_CERT_FILE in .env.example).
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8600/health', timeout=15).status==200 else 1)\""]
+      interval: 30s
+      timeout: 20s
       retries: 3
     restart: unless-stopped
     networks: [soc-network]

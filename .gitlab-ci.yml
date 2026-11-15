@@ -1,12 +1,14 @@
-# MCP-Server — soc-mcp-splunk, Splunk over MCP, for development.
+# MCP-Server — soc-mcp-splunk, Splunk for the backend over MCP.
 #
-# Not deployed. In production the backend talks to Splunk's own MCP Server app
-# directly (Backend/docs/splunk-mcp.md), so this pipeline only builds the
-# image and runs the tests. The data catalogue, its scripts and the
-# export_catalog job moved to the Backend repo (Backend/docs/splunk-catalog.md).
+# Builds the image and runs the tests; deploys nothing yet. The backend's Splunk
+# stage now calls this connector (splunk_lookup) rather than Splunk's own MCP
+# Server app, so production needs it running beside the backend — that deploy
+# job is still to be written (README.md, "Deployment"). The data catalogue, its
+# scripts and the export_catalog job are in the Backend repo
+# (Backend/docs/splunk-catalog.md).
 #
-# ThreatQ and Confluence are no longer here either: the backend calls them
-# directly.
+# soc-mcp-confluence (Confluence/) is built and tested the same way. ThreatQ is
+# no longer here: the backend calls it directly.
 
 stages:
   - build
@@ -49,6 +51,7 @@ build_image:
   script:
     - *proxy
     - docker build $PROXY_ARGS -t soc-mcp-splunk:ci ./Splunk
+    - docker build $PROXY_ARGS -t soc-mcp-confluence:ci ./Confluence
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
@@ -74,6 +77,10 @@ code_test:
         ( cd Splunk && SPLUNK_MODE=$mode python -c "import server" ) || { echo "Splunk ($mode) failed to import"; exit 1; }
         echo "  Splunk ($mode) imports cleanly"
       done
+      ( cd Confluence && CONFLUENCE_MCP_AUTH_TOKEN=ci CONFLUENCE_BASE_URL=http://127.0.0.1:9 \
+          CONFLUENCE_SPACE_KEY=CI CONFLUENCE_API_TOKEN=ci python -c "import server" ) \
+        || { echo "Confluence failed to import"; exit 1; }
+      echo "  Confluence imports cleanly"
     # What each route does with a body or a token it did not expect. Nothing
     # here contacts a platform; tests/conftest.py supplies its own environment.
     - |

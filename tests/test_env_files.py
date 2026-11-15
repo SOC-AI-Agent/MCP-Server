@@ -22,6 +22,8 @@ NOT_A_SETTING = {"SSL_CERT_FILE"}
 # validate_startup() refuses to start without each of these in live mode.
 REFUSES_TO_START_WITHOUT = {
     "Splunk": ["MCP_AUTH_TOKEN", "SPLUNK_TOKEN", "SPLUNK_ALLOWED_INDEXES"],
+    "Confluence": ["CONFLUENCE_MCP_AUTH_TOKEN", "CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN",
+                   "CONFLUENCE_SPACE_KEY"],
 }
 # Not startup checks, but live mode cannot be used without them.
 ALSO_NEEDED = ["SPLUNK_BASE_URL", "SPLUNK_MODE"]

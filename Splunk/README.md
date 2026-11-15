@@ -1,18 +1,34 @@
 # soc-mcp-splunk
 
-A development stand-in for **Splunk's own MCP Server app**: the same two tools
-(`saia_generate_spl` for Text-to-SPL, `splunk_run_query`) at the same path
-(`/services/mcp`), so the backend does not change between development and a real
-Splunk — only `SPLUNK_MCP_URL` and `SPLUNK_MCP_TOKEN` in `Backend/.env` do. In
-`SPLUNK_MODE=mock` it answers both from a fixed set of events.
+Splunk for the backend, over MCP. The backend (`soc-core-worker`) is the MCP client
+and calls two tools here:
 
-The backend (`soc-core-worker`) is the MCP client. How it connects to a real
-Splunk — the flow, what Text-to-SPL is sent, the apps to install, the service
-account and token, network and certificate, its settings and the check — is in
-**[Backend/docs/splunk-mcp.md](../../Backend/docs/splunk-mcp.md)**.
+| Tool | Does |
+| --- | --- |
+| `splunk_lookup(question)` | One requirement, start to finish: the prompt, Text-to-SPL, the read-only check, the search, the rows trimmed for a small model, and the answer as text. |
+| `splunk_text_to_spl(question)` | The first half: the SPL that would run, or why it would not. Nothing is searched. |
 
-Every mock answer carries `mock: true`, and the backend writes **MOCK DATA** into
-the answer an analyst reads. This service is not deployed to production at all.
+`question` is what stage 1 stored for the requirement: `requirement`, and optionally
+`index`, `sourcetype`, `alertIndex`, `alertSourcetype`, `context`, `fieldHints`,
+`indicator`, `fields`, `filters`, `summarise`, `frequencyOf`, `earliest`, `latest`.
+A requirement that cannot be answered is not a tool error: the result has `error`
+and the `prompt` that was built, so the backend keeps it beside the ones that worked.
+
+```
+question ─► lookup.build_prompt ─► Text-to-SPL ─► lookup.with_time_window ─► spl.check_readonly
+                                   (template, or                                    │
+                                    Splunk AI Assistant)        mock.run_query  or  Splunk REST
+                                                                                    │
+            prompt, spl, rows, count, capped, limit, mock, answer ◄─ lookup.trim_row / render
+```
+
+This used to be the backend's own code (`splunk-mcp.service.ts`, `spl-guard.ts`),
+calling this service twice per requirement. Under the two tools are the ones
+Splunk's own MCP Server app publishes, by the same names at the same path
+(`/services/mcp`): `saia_generate_spl` and `splunk_run_query`.
+
+Every mock answer carries `mock: true` and says **MOCK DATA** in the text an analyst
+reads.
 
 ---
 
@@ -27,13 +43,16 @@ In `Backend/.env`: `SPLUNK_MCP_URL=http://soc-mcp-splunk:8200/services/mcp`, the
 `MCP_AUTH_TOKEN`, and `SPLUNK_LOOKUP_MODE=manual` or `auto`.
 `docker exec soc-core-worker node dist/scripts/splunk-mcp-check.js "Which destinations did 10.1.100.11 talk to"` runs one through.
 
+The same events can be put in a real Splunk: the container in
+[`../external/splunk`](../external/splunk/README.md), searched in live mode.
+
 The events (`index=main sourcetype=fortigate`, all inside the last two hours):
 
 - `45.83.122.9` failing SSL-VPN logins as `j.smith` and `admin`, then a tunnel up;
 - `10.1.100.11` (user `j.smith`) then talking to `23.59.154.35`, `44.215.36.185` on 443/8443, Tor on `185.220.101.4:9001` (blocked), and SMB to `10.1.100.20-22`;
 - background DNS and HTTPS from `10.1.100.44` and `10.1.100.52`.
 
-`saia_generate_spl` fills a template: `search index=… [sourcetype=…] ("value" OR …) earliest=… latest=…`,
+Text-to-SPL in mock mode fills a template (`text_to_spl.py`): `search index=… [sourcetype=…] ("value" OR …) earliest=… latest=…`,
 then `| stats count by srcip, dstip, dstport, action` when the text asks how many / top /
 destinations, otherwise `| table _time, srcip, dstip, dstport, user, action, msg`.
 `index=`, `sourcetype=`, `earliest=` and `latest=` in the text are taken as hints.
@@ -42,20 +61,28 @@ destinations, otherwise `| table _time, srcip, dstip, dstport, user, action, msg
 
 ## Modes
 
-| `SPLUNK_MODE` | `saia_generate_spl` | `splunk_run_query` | Needs |
+| `SPLUNK_MODE` | Text-to-SPL | Searches run on | Needs |
 | --- | --- | --- | --- |
 | `mock` | the template above | the fixed events | `MCP_AUTH_TOKEN` |
-| `live` (the default) | refuses: in production Text-to-SPL is Splunk's own | runs against `SPLUNK_BASE_URL` | `MCP_AUTH_TOKEN`, `SPLUNK_TOKEN`, `SPLUNK_ALLOWED_INDEXES` |
+| `live` (the default) | the template, without the mock's columns | `SPLUNK_BASE_URL` | `MCP_AUTH_TOKEN`, `SPLUNK_TOKEN`, `SPLUNK_ALLOWED_INDEXES` |
+| `live` + `SPLUNK_SAIA_MCP_URL` | Splunk AI Assistant for SPL, through Splunk's own MCP server (`saia.py`) | `SPLUNK_BASE_URL` | the above, and a Splunk with the MCP Server and AI Assistant apps |
 
-Live mode is for `/catalog`, `/check-connection` and `/query` against a real Splunk;
-stage 2 itself needs Text-to-SPL, which only Splunk's own MCP server has. The
-default is `live` so that a forgotten setting can never serve made-up events.
+The default is `live` so that a forgotten setting can never serve made-up events.
+
+The live template assumes nothing about the data: the index, sourcetype and window
+are the ones the request names, the values found in it are search terms, and a
+count groups by the field names the request gives (`… is in srcip or dstip`). It
+ends `| head 50 | fields *` because searches run in fast mode, which extracts only
+the fields a search names. It is enough for a Splunk without the assistant, and it
+is not the assistant: with `SPLUNK_SAIA_MCP_URL` set the prompt — which carries
+values from the alert — goes to Splunk AI Assistant, which processes it in Splunk
+Cloud. What the assistant writes is checked and run here like any other SPL.
 
 ## What a search may do
 
-Both tools and `/query` refuse before anything reaches Splunk:
+Every tool and `/query` refuse before anything reaches Splunk:
 
-- **`splunk_run_query`** (`spl.check_readonly`): a denylist, because generated SPL uses the
+- **`splunk_lookup`, `splunk_text_to_spl`, `splunk_run_query`** (`spl.check_readonly`): a denylist, because generated SPL uses the
   whole read-only language. It is [Splunk's own list of risky commands][risky] — `collect`, `delete`,
   `dump`, `map`, `mcollect`, `meventcollect`, `outputcsv`, `outputlookup`, `run`,
   `runshellscript`, `script`, `sendalert`, `sendemail`, `tscollect` — plus `summaryindex`,
@@ -69,9 +96,9 @@ Both tools and `/query` refuse before anything reaches Splunk:
   `tstats`, `makeresults`, `bin`, `stats`, `sort`, `head`, quoted `index="name"` only, no
   subsearches.
 
-The backend runs the same denylist on the generated SPL **before** sending it
-(`Backend/src/modules/enrichment/spl-guard.ts`; `tests/test_splunk_mcp.py` fails if the two
-lists differ), and [Splunk's own guardrails][guardrails] run after.
+This is the only check on our side now — the backend no longer has one of its own —
+and [Splunk's own guardrails][guardrails] run after when the search goes through
+Splunk's MCP server.
 None of these is the real control: **the token's role must be unable to write or read
 other indexes regardless.**
 
@@ -79,7 +106,7 @@ other indexes regardless.**
 
 | Route | Who | Does |
 | --- | --- | --- |
-| `POST /services/mcp` | backend | MCP (streamable HTTP, stateless, JSON responses). Tools `saia_generate_spl`, `splunk_run_query`. |
+| `POST /services/mcp` | backend | MCP (streamable HTTP, stateless, JSON responses). Tools `splunk_lookup`, `splunk_text_to_spl`; and `saia_generate_spl`, `splunk_run_query`. |
 | `POST /query` | an operator | Run one SPL search and return Splunk's rows (live mode). |
 | `GET /catalog` | an operator | Indexes, sourcetypes and fields this token can see. |
 | `GET /check-connection` | CI, an operator | Whether Splunk can be used, and where it stops if not. |
@@ -99,16 +126,19 @@ POST /query  {"spl": "search index=\"main\" srcip=\"10.1.100.11\" | head 20",
 
 | File | Role |
 | --- | --- |
-| `server.py` | The MCP server, its two tools, and the plain routes. |
-| `mock.py` | The mock estate, the Text-to-SPL template and the tiny search engine behind mock mode. |
+| `server.py` | The MCP server, its tools, and the plain routes. |
+| `lookup.py` | One requirement: the question's shape, the prompt, the SPL in what Text-to-SPL answered, the time window, trimming and rendering the rows. |
+| `text_to_spl.py` | Text-to-SPL as a template, for mock mode and for a Splunk without the assistant. |
+| `saia.py` | Text-to-SPL forwarded to Splunk AI Assistant through Splunk's own MCP server (`SPLUNK_SAIA_MCP_URL`). |
+| `mock.py` | The mock estate and the tiny search engine behind mock mode. |
 | `spl.py` | `check_readonly` (MCP) and `check_query` (`/query`); the quoting the catalogue route uses. |
 | `splunk_api.py` | HTTP client for the Splunk REST API, and the connection check. |
 | `check_connection.py` | Calls `/check-connection` from inside the container; exit 0 or 1, so CI can branch on it. |
 | `auth.py` | Bearer-token middleware in front of every route but `/health`. |
 | `config.py` | Env to typed settings, plus the startup preconditions. |
 
-The backend side of the same flow (the MCP client, `spl-guard.ts`, the check script and
-its settings) is listed in [Backend/docs/splunk-mcp.md](../../Backend/docs/splunk-mcp.md).
+The backend side of the same flow (the MCP client, the check script and its
+settings) is listed in [Backend/docs/splunk-mcp.md](../../Backend/docs/splunk-mcp.md).
 
 The data catalogue and the lookup plans live in the Backend repo (`Backend/catalog/`,
 built into its image), with the scripts and the `export_catalog` CI job that refresh
@@ -127,10 +157,14 @@ Set in `../.env` (`../.env.local.example` is a skeleton).
 | `MCP_ALLOWED_HOSTS` | `soc-mcp-splunk:8200,localhost:8200,127.0.0.1:8200` | Host headers the MCP endpoint accepts. |
 | `SPLUNK_TOKEN` | — **required in live** | Splunk auth token for a search-only role. |
 | `SPLUNK_ALLOWED_INDEXES` | — **required in live** | Comma-separated allowlist, or `*` to opt out on purpose. The connector's own; the backend has no allowlist. |
-| `SPLUNK_BASE_URL` | — | Management port (8089), not the web UI on 8000. |
+| `SPLUNK_BASE_URL` | — | Management port (8089), not the web UI on 8000. `https://soc-splunk:8089` for the container. |
 | `SPLUNK_VERIFY_SSL` | `true` | `false` only for a self-signed lab cert. |
 | `SPLUNK_TIMEOUT` | `60` | Seconds per search. |
 | `SPLUNK_MAX_COUNT` | `200` | Hard ceiling on rows, whatever the caller asks for. |
+| `SPLUNK_ALERT_INDEX`, `SPLUNK_ALERT_NAME_FIELD` | `notable`, `search_name` | Where fired alerts are and the field with their name, for "how often has this alert fired". Splunk ES defaults. |
+| `SPLUNK_SAIA_MCP_URL` | — | Splunk's own MCP server, `https://<splunk>:8089/services/mcp`. Set: Text-to-SPL is Splunk AI Assistant. Blank: the template. Ignored in mock. |
+| `SPLUNK_SAIA_MCP_TOKEN` | — | The token for it (audience `mcp`). Blank: `SPLUNK_TOKEN`. |
+| `SPLUNK_SAIA_TOOL`, `SPLUNK_SAIA_ARG` | `saia_generate_spl`, read from the schema | Only if Splunk renames them. |
 | `MCP_PORT` | `8200` | Internal only — the service publishes no port. |
 
 Generate the token with `openssl rand -hex 32`.
