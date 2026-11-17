@@ -25,6 +25,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import settings
+from text_to_spl import PATH_FIELDS
 
 # Whole events do not fit a small model's context: keep the fields that carry
 # meaning plus a bounded slice of _raw. `host` and `source` on forwarded syslog
@@ -189,6 +190,15 @@ def build_prompt(q: Question) -> tuple[str, str, str]:
             + "; ".join(f"{h.value} is in {' or '.join(h.fields)}" for h in hints)
             + ". Use these field names."
         )
+        # A bare file name in a field that holds a full path matches nothing as
+        # it stands: Image="cmd.exe" misses C:\Windows\SysWOW64\cmd.exe.
+        for h in hints:
+            paths = [f for f in h.fields if f in PATH_FIELDS]
+            if paths and "\\" not in h.value and "/" not in h.value and not h.value.startswith("*"):
+                lines.append(
+                    f"{h.value} is a file name and {' and '.join(paths)} hold full paths: match the end, "
+                    f'e.g. {paths[0]}="*\\\\{h.value}".'
+                )
     # Values last and unpunctuated: a trailing full stop read as part of the time
     # or the index name is a search for something that does not exist.
     lines.append(f"Time range: earliest={earliest} latest={latest}")
@@ -230,6 +240,12 @@ def writer_prompt(prompt: str, limit: int) -> str:
         "  unless the request is about that value.",
         '- A value said to be in "A or B" is searched in both: (A="v" OR B="v"). Different values are ANDed.',
         '- Quote every value. Write a backslash inside quotes twice: User="CORP\\\\bob".',
+        '- A file name in a path field (Image, ParentImage, TargetFilename, Service_File_Name) is the end of',
+        '  a full path: Image="*\\\\cmd.exe", never Image="cmd.exe".',
+        '- Never search words of the question as quoted text ("Event ID 4624", "Logon Type 3"): use the',
+        "  field, EventCode=4624 Logon_Type=3. A sourcetype must be one the request names.",
+        "- Add no condition the request does not ask for: a filter of your own (CommandLine!=...) can",
+        "  remove the very events that answer it.",
         "- Filter before the first pipe, not with `| search` or `| where` after it. No subsearches, no comments.",
         "- Read-only. Never delete, collect, outputlookup, outputcsv, sendemail, sendalert, map, rest,",
         "  script, run or any command that writes or sends data. No macros (backticks).",

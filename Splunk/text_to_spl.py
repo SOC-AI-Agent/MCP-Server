@@ -121,7 +121,10 @@ def _stats(prompt: str) -> str | None:
 
 # Fields that store a full path (e.g. `%systemroot%\PKSnPlKq.exe` or `C:\Windows\PKSnPlKq.exe`)
 # when the alert indicator is just the filename (`PKSnPlKq.exe`), or a path without query string.
-_PATH_FIELDS = {"Image", "ParentImage", "Service_File_Name"}
+PATH_FIELDS = {
+    "Image", "ParentImage", "Service_File_Name", "TargetFilename", "SourceImage", "TargetImage", "ImageLoaded",
+}
+_PATH_FIELDS = PATH_FIELDS
 
 
 def _match_expr(field: str, value: str) -> str:

@@ -335,6 +335,28 @@ def test_a_playbook_search_carries_its_filters_and_its_count(mcp):
     assert "Field names in this data: 185.220.101.4 is in dstip. Use these field names." in lines
 
 
+def test_a_file_name_in_a_path_field_is_matched_by_its_end(mcp):
+    _, got = tool(mcp(**LIVE), "splunk_text_to_spl", question={
+        "requirement": "Other instances of PKSnPlKq.exe",
+        "index": "main", "sourcetype": "sysmon",
+        "indicator": "PKSnPlKq.exe", "fields": ["Image", "TargetFilename"],
+    })
+    lines = got["prompt"].split("\n")
+    assert ('PKSnPlKq.exe is a file name and Image and TargetFilename hold full paths: '
+            'match the end, e.g. Image="*\\\\PKSnPlKq.exe".') in lines
+    # The template does the same on its own.
+    assert 'Image="*PKSnPlKq.exe"' in got["spl"] and 'TargetFilename="*PKSnPlKq.exe"' in got["spl"]
+
+
+def test_a_full_path_gets_no_wildcard_line(mcp):
+    _, got = tool(mcp(), "splunk_text_to_spl", question={
+        "requirement": "What did it start",
+        "index": "main", "sourcetype": "sysmon",
+        "indicator": "C:\\Windows\\PKSnPlKq.exe", "fields": ["Image"],
+    })
+    assert "is a file name" not in got["prompt"]
+
+
 # ── SPL written by the caller's own agent ──────────────────────────────────────
 # The backend shows its soc-spl agent what splunk_prompt returns and hands the
 # reply back as `spl`. Nothing here calls a model.
