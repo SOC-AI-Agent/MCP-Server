@@ -1,0 +1,140 @@
+# soc-misp — a MISP threat-intelligence platform for the Backend to look indicators up in.
+#
+# "External" the way a company's ThreatQ is: its own stack, reached by the
+# Backend worker at MISP_BASE_URL over soc-network. For development and demos:
+# a free, open-source TIP with the lab's IOCs in it, so a verdict can rest on
+# reputation and not only on logs.
+#
+#   cp .env.example .env            # passwords and keys (openssl rand -hex ...)
+#   docker compose up -d            # first start takes a few minutes
+#   python3 setup.py --write-env    # read-only user for the Backend, lab IOCs
+#
+# Trimmed from github.com/MISP/misp-docker (same images, pinned): no mail relay,
+# no misp-modules, no misp-guard, and a small InnoDB buffer — this sits next to
+# Splunk and the rest of the stack. Plain HTTP: it is reached over soc-network and,
+# from this machine, on 127.0.0.1 only.
+
+name: soc-misp
+
+services:
+  soc-misp-redis:
+    image: ghcr.io/valkey-io/valkey:7.2
+    container_name: soc-misp-redis
+    command: ["sh", "-c", "exec valkey-server --requirepass \"$$REDIS_PASSWORD\" --save ''"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in external/misp/.env}
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+    networks: [default]
+
+  soc-misp-db:
+    image: ghcr.io/mariadb/mariadb:10.11
+    container_name: soc-misp-db
+    environment:
+      MYSQL_USER: misp
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in external/misp/.env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in external/misp/.env}
+      MYSQL_DATABASE: misp
+    command: ["--innodb-buffer-pool-size=256M", "--innodb-log-file-size=128M"]
+    volumes:
+      - soc-misp-mysql:/var/lib/mysql
+    cap_add: [SYS_NICE]
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin --user=misp --password=\"$$MYSQL_PASSWORD\" status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    networks: [default]
+
+  soc-misp-core:
+    image: ghcr.io/misp/misp-docker/misp-core:${MISP_TAG:-v2.5.51}
+    container_name: soc-misp-core
+    depends_on:
+      soc-misp-redis: {condition: service_healthy}
+      soc-misp-db: {condition: service_healthy}
+    environment:
+      BASE_URL: ${MISP_BASE_URL_PUBLIC:-http://localhost:8095}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@soc-lab.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in external/misp/.env}
+      ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in external/misp/.env (40 hex characters)}
+      ADMIN_ORG: ${ADMIN_ORG:-SOC-Lab}
+      MISP_CONTACT: ${ADMIN_EMAIL:-admin@soc-lab.local}
+      MISP_EMAIL: ${ADMIN_EMAIL:-admin@soc-lab.local}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in external/misp/.env}
+      DISABLE_PRINTING_PLAINTEXT_CREDENTIALS: "true"
+      # No feed fetching or sync: the lab's IOCs are loaded by setup.py.
+      CRON_USER_ID: "1"
+      MYSQL_HOST: soc-misp-db
+      MYSQL_PORT: "3306"
+      MYSQL_USER: misp
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: misp
+      REDIS_HOST: soc-misp-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      FASTCGI_LISTEN_STATUS: soc-misp-core:9003
+      PHP_LISTEN_FPM: "true"
+      PHP_MEMORY_LIMIT: 512M
+      PHP_FCGI_CHILDREN: "5"
+      TZ: UTC
+    volumes:
+      - soc-misp-configs:/var/www/MISP/app/Config
+      - soc-misp-logs:/var/www/MISP/app/tmp/logs
+      - soc-misp-files:/var/www/MISP/app/files
+      - soc-misp-gnupg:/var/www/MISP/.gnupg
+    cap_add: [AUDIT_WRITE]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/9002' || exit 1"]
+      interval: 10s
+      timeout: 2s
+      retries: 30
+      start_period: 120s
+    expose: ["9002"]
+    restart: unless-stopped
+    networks: [default]
+
+  soc-misp:
+    image: ghcr.io/misp/misp-docker/misp-nginx:${MISP_TAG:-v2.5.51}
+    container_name: soc-misp
+    depends_on:
+      soc-misp-core: {condition: service_healthy}
+    environment:
+      BASE_URL: ${MISP_BASE_URL_PUBLIC:-http://localhost:8095}
+      FASTCGI_LISTEN: soc-misp-core:9002
+      FASTCGI_LISTEN_STATUS: soc-misp-core:9003
+      TZ: UTC
+    ports:
+      # Web UI and API from this machine (admin / ADMIN_PASSWORD). The Backend
+      # does not use it: it reaches http://soc-misp:8080 over soc-network.
+      - "${MISP_BIND:-127.0.0.1}:${MISP_HTTP_PORT:-8095}:8080"
+    tmpfs:
+      - /etc/nginx/conf.d:mode=0755,uid=101,gid=101
+      - /var/cache/nginx:mode=0755,uid=101,gid=101
+      - /tmp:mode=1777
+    user: nginx
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    networks: [default, soc-network]
+
+volumes:
+  soc-misp-mysql:
+  soc-misp-configs:
+  soc-misp-logs:
+  soc-misp-files:
+  soc-misp-gnupg:
+
+networks:
+  default:
+    name: soc-misp-internal
+  soc-network:
+    # Shared with the Backend worker; created once (`docker network create soc-network`).
+    external: true
+    name: soc-network
