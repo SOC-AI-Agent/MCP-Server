@@ -57,18 +57,32 @@ docker compose --profile confluence up -d --build     # fill CONFLUENCE_* in .en
 
 ## The lab logs
 
-`external/splunk/load_raw_logs.py` loads the three CSV files in
-`Splunk/Raw logs/` into `index=main`:
+`external/splunk/load_raw_logs.py` loads the CSV files in `Splunk/Raw logs/`
+into `index=main`. The first three are the real lab logs of the web server
+KBTG-Bootcamp. The `gen_*` files are synthetic attack scenarios from
+`external/splunk/generate_logs.py`, each mixed with ordinary activity. All of
+them are also in `Splunk/Raw_logs.zip`.
 
-| File | Sourcetype | Events |
-| --- | --- | --- |
-| `splunk_logs_apache.csv` | `access_combined` | 1,048,576 |
-| `splunk_logs_sysmon.csv` | `sysmon` | 384 |
-| `splunk_logs_wineventlog.csv` | `wineventlog` | 63 |
+| File | Sourcetype | Events | What is in it |
+| --- | --- | --- | --- |
+| `splunk_logs_apache.csv` | `access_combined` | 1,048,576 | Directory scan, web shell |
+| `splunk_logs_sysmon.csv` | `sysmon` | 384 | Processes on the web server |
+| `splunk_logs_wineventlog.csv` | `wineventlog` | 63 | Logons, service install |
+| `gen_wineventlog_auth.csv` | `wineventlog` | 230 | Password spray and brute force on FS-01 (4625), then a 4624 |
+| `gen_linux_secure.csv` | `linux_secure` | 401 | SSH brute force on web-02, a successful login, sudo |
+| `gen_fortigate.csv` | `fortigate` | 2,764 | Internal port scan; beaconing to a C2 address every 60 s |
+| `gen_dns.csv` | `bind_query` | 3,180 | DNS tunnelling over long TXT queries |
+| `gen_sysmon.csv` | `sysmon` | 60 | Encoded PowerShell from Word; LSASS dump |
 
-The events keep their own times, 24 Dec 2024 16:43 to 17:58 UTC. A search over
-"the last 24 hours" finds none of them. Run the script again and nothing
-doubles: a sourcetype that already has events is skipped.
+The real logs cover 24 Dec 2024 16:43 to 17:58 UTC, the synthetic ones
+08:00 to 20:00 UTC on the same day. A search over "the last 24 hours" finds
+none of them. Run the script again and nothing doubles: a file whose events are
+already indexed is skipped. Each scenario has a playbook in Confluence
+(`UC-AUTH-*`, `UC-NET-*`, `UC-EDR-002`, `UC-EDR-003`) whose detection rule
+finds exactly that scenario.
+
+To regenerate the synthetic files: `python3 generate_logs.py`. It uses a fixed
+seed, so the output is the same each time.
 
 The field names for these sourcetypes are described in
 `Backend/catalog/splunk-catalog.json`.

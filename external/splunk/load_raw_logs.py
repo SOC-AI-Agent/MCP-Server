@@ -11,13 +11,22 @@ into index=main — the only index the soc_search role can search — under:
     splunk_logs_sysmon.csv       sourcetype=sysmon            (defined here)
     splunk_logs_wineventlog.csv  sourcetype=wineventlog       (defined here)
 
-A plain Splunk container has no Sysmon or Windows add-on, so the two sourcetypes
-defined here carry the minimum those add-ons would: where an event ends, where
-its time is, and the field extractions Backend/catalog/splunk-catalog.json names.
+and the synthetic scenarios from generate_logs.py (gen_*.csv):
+
+    gen_wineventlog_auth.csv     sourcetype=wineventlog       4625 / 4624 on FS-01
+    gen_linux_secure.csv         sourcetype=linux_secure      sshd and sudo on web-02 (defined here)
+    gen_fortigate.csv            sourcetype=fortigate         key=value, extracted at search time
+    gen_dns.csv                  sourcetype=bind_query        BIND query log of ns-01 (defined here)
+    gen_sysmon.csv               sourcetype=sysmon            WS-12 and FS-01 (host is in Computer)
+
+A plain Splunk container has no Sysmon, Windows or Unix add-on, so the
+sourcetypes defined here carry the minimum those add-ons would: where an event
+ends, where its time is, and the field extractions
+Backend/catalog/splunk-catalog.json names.
 
 Events keep their own times (24 Dec 2024), so a search needs a window that
-reaches them. A sourcetype that already has events is skipped: run it twice and
-nothing doubles.
+reaches them. A file whose events are already indexed (same sourcetype and
+source) is skipped: run it twice and nothing doubles.
 """
 
 from __future__ import annotations
@@ -40,6 +49,11 @@ FILES = [
     ("splunk_logs_apache.csv", "access_combined", "apache"),
     ("splunk_logs_sysmon.csv", "sysmon", HOST),
     ("splunk_logs_wineventlog.csv", "wineventlog", HOST),
+    ("gen_wineventlog_auth.csv", "wineventlog", "FS-01"),
+    ("gen_linux_secure.csv", "linux_secure", "web-02"),
+    ("gen_fortigate.csv", "fortigate", "FGT-01"),
+    ("gen_dns.csv", "bind_query", "ns-01"),
+    ("gen_sysmon.csv", "sysmon", "corp-endpoints"),
 ]
 
 TRANSFORMS = {
@@ -67,6 +81,18 @@ PROPS = {
         "TZ": "US/Pacific",
         "REPORT-wineventlog_message": "wineventlog_message",
     },
+    "linux_secure": {
+        "SHOULD_LINEMERGE": "false", "TIME_FORMAT": "%Y-%m-%dT%H:%M:%S%:z", "MAX_TIMESTAMP_LOOKAHEAD": "30",
+        "EXTRACT-process": r"^\S+ \S+ (?<process>[\w.-]+)(?:\[(?<pid>\d+)\])?:",
+        "EXTRACT-sshd": r"sshd\[\d+\]: (?<action>Failed|Accepted) (?<auth_method>\S+) for (?:invalid user )?"
+                        r"(?<user>\S+) from (?<src>\S+) port (?<src_port>\d+)",
+        "EXTRACT-sudo": r"sudo:\s+(?<user>\S+) : .*?USER=(?<target_user>\S+) ; COMMAND=(?<command>.+)$",
+    },
+    "bind_query": {
+        "SHOULD_LINEMERGE": "false", "TIME_FORMAT": "%d-%b-%Y %H:%M:%S.%3N", "MAX_TIMESTAMP_LOOKAHEAD": "25",
+        "TZ": "UTC",
+        "EXTRACT-query": r"client @\S+ (?<src>[\d.]+)#(?<src_port>\d+) \([^)]*\): query: (?<query>\S+) IN (?<record_type>\w+)",
+    },
 }
 
 
@@ -81,9 +107,9 @@ def define(splunk: Splunk, conf: str, name: str, settings: dict[str, str]) -> No
                 data={"sharing": "global", "owner": "nobody"})
 
 
-def count(splunk: Splunk, sourcetype: str) -> int:
+def count(splunk: Splunk, sourcetype: str, source: str = "*") -> int:
     body = splunk.must("count events", "POST", "/services/search/jobs", data={
-        "search": f"| tstats count where index={INDEX} sourcetype={sourcetype}",
+        "search": f'| tstats count where index={INDEX} sourcetype={sourcetype} source="{source}"',
         "exec_mode": "oneshot", "earliest_time": "0", "latest_time": "now"})
     rows = body.get("results", []) if isinstance(body, dict) else []
     return int(rows[0]["count"]) if rows else 0
@@ -137,16 +163,16 @@ def main() -> None:
         if not path.exists():
             print(f"{filename}: not in {LOGS}, skipped")
             continue
-        have = count(splunk, sourcetype)
+        have = count(splunk, sourcetype, filename)
         if have:
-            print(f"{filename}: sourcetype={sourcetype} already has {have} events, skipped")
+            print(f"{filename}: already has {have} events in sourcetype={sourcetype}, skipped")
             continue
         sent = load(splunk, path, sourcetype, host)
         print(f"{filename}: {sent} events sent to index={INDEX} sourcetype={sourcetype}")
 
     time.sleep(15)  # indexing is behind the last POST
-    for _, sourcetype, _ in FILES:
-        print(f"index={INDEX} sourcetype={sourcetype}: {count(splunk, sourcetype)} events")
+    for filename, sourcetype, _ in FILES:
+        print(f"index={INDEX} sourcetype={sourcetype} source={filename}: {count(splunk, sourcetype, filename)} events")
 
 
 if __name__ == "__main__":
